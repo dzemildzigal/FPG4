@@ -9,10 +9,10 @@ experiments pass.
 Show that a block-FP4 datapath can train a neural network without a float32 or
 bfloat16 master copy of the weights.
 
-The proof has two layers.
+The proof has two phases. Phase 1 is in software where we emulate the end goal in RTL.
 
-1. A reference implementation in Python that is exact and readable.
-2. An RTL implementation that is bit-identical to the reference.
+1. A reference implementation in Python that emulates FPG4.
+2. An RTL implementation that behaves the same as simulation.
 
 ## Structure
 
@@ -25,7 +25,7 @@ data/     the datasets. Not tracked by git
 
 ## Status
 
-Setup only. The next step is L0, the float32 reference model.
+L0 done, scaffolding L1.
 
 ## Environment
 
