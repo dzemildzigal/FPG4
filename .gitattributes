@@ -1,0 +1,38 @@
+# The repository is developed on Linux and built on a Windows machine that holds
+# Vivado. One line ending everywhere, so that a script or a vector file cannot
+# change shape in transit.
+#
+# A vector file that loses a line feed is a broken contract between the
+# reference model and the RTL. A Tcl script that gains a carriage return still
+# runs, but the difference hides in a diff.
+
+* text=auto eol=lf
+
+# Sources
+*.sv            text eol=lf
+*.svh           text eol=lf
+*.v             text eol=lf
+*.vh            text eol=lf
+*.xdc           text eol=lf
+
+# Scripts
+*.tcl           text eol=lf
+*.py            text eol=lf
+*.bat           text eol=lf
+*.sh            text eol=lf
+
+# Data and documents
+*.csv           text eol=lf
+*.md            text eol=lf
+*.txt           text eol=lf
+*.json          text eol=lf
+
+# Files that must not be touched
+*.npz           binary
+*.png           binary
+*.jpg           binary
+*.pdf           binary
+*.xpr           binary
+*.dcp           binary
+*.bit           binary
+*.ltx           binary

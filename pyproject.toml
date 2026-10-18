@@ -1,0 +1,13 @@
+[project]
+name = "fpg4-train"
+version = "0.1.0"
+description = "Native FPG4 training experiments"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=2.0",
+    "matplotlib>=3.9",
+    "path",
+]
+
+[tool.uv]
+package = false
