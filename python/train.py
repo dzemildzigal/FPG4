@@ -70,6 +70,11 @@ def save_weights(seed):
     np.savez(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out", f"weights_seed{seed}.npy"), result["params"], **result["params"])
     return result
 
+def load_weights(seed):
+    data = np.load(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out", f"weights_seed{seed}.npy.npz"))
+    params = {key: data[key] for key in data if key != "arr_0"}
+    return params
+
 
 if __name__ == "__main__":
     for seed in [42, 4242, 424242]:

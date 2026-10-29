@@ -8,6 +8,8 @@ All experiments will be in software, Python before RTL work starts.
 |---|---|---|
 |L0|nothing, all fp32|does the model learn at all?|
 |L1|FP4 after training|FP4 only for inference, what do we lose from FP32|
+|L1a|FP4 w FP64 scale|what do we lose from just the payload quantization|
+|L1b|FP4 w E6M2/E5M3 scale|what do we lose from the payload and scale quantization|
 |L2|FP4 for forward pass, master weights fp32, backprop fp32|how does FP4 influence the forward pass in training|
 |L3|FP4 backprop with Round To Nearest|how many updates vanish? discretization error (gap)|
 |L4|FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3?|
