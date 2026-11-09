@@ -30,14 +30,24 @@ def init_params(seed):
     }
     return params
 
-def forward(p, X):
+def forward(p, X, quant=None):
     # Perform the forward pass using the parameters p and input X.
+    # quant is None for the float64 path. Otherwise it is a function (A) -> (A_quantized, counters) that is
+    # applied to every activation tensor just before it enters a matrix multiply: the input X, then A1, then A2.
+    # The weights are not touched here. A caller that wants FP4 weights puts the decoded Wq in p.
+    # The logits Z3 are not quantized: the softmax and the loss run in float.
     X = X.astype(p["W1"].dtype)
+    if quant is not None:
+        X, _ = quant(X)
 
     Z1 = X @ p["W1"] + p["b1"]
     A1 = relu(Z1)
+    if quant is not None:
+        A1, _ = quant(A1)
     Z2 = A1 @ p["W2"] + p["b2"]
     A2 = relu(Z2)
+    if quant is not None:
+        A2, _ = quant(A2)
     Z3 = A2 @ p["W3"] + p["b3"]
     P = softmax(Z3)
     cache = {
@@ -96,6 +106,19 @@ def loss(P, y):
 def accuracy(P, y):
     # accuracy = mean(argmax(P, axis=1) == y)
     return np.mean(np.argmax(P, axis=1) == y)
+
+
+def evaluate(p, X, y, chunk=10_000, quant=None):
+    # Mean loss and accuracy of p over (X, y), computed chunk by chunk.
+    # quant is passed to forward, see there. None means plain float64.
+    # Why chunks: forward() casts X to float64. 400,000 x 784 in float64 is 2.5 GB. One chunk is 63 MB.
+    # loss() returns a mean over its chunk, so we weight it by the chunk size to get the mean over all rows.
+    total_loss, correct = 0.0, 0
+    for s in range(0, len(X), chunk):
+        P, _ = forward(p, X[s:s + chunk], quant=quant)
+        total_loss += loss(P, y[s:s + chunk]) * len(P)
+        correct += np.sum(np.argmax(P, axis=1) == y[s:s + chunk])
+    return total_loss / len(X), correct / len(X)
 
 
 def adam(params, grads, m, v, t, lr=0.001, beta1=0.9, beta2=0.999, eps=1e-8):

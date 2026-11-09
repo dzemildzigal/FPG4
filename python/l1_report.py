@@ -10,6 +10,7 @@ import quant as q
 from train import load_weights
 
 SEEDS = [42, 4242, 424242]
+DATASET = sys.argv[1] if len(sys.argv) > 1 else "mnist"     # uv run python l1_report.py [mnist|mnist1d]
 BLOCK = 16
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out")
 
@@ -34,7 +35,7 @@ def collect(fn):
     all_codes, all_x = [], []
     counters = {}
     for seed in SEEDS:
-        P = load_weights(seed)
+        P = load_weights(seed, DATASET)
         for key in ("W1", "W2", "W3"):
             W = P[key]
             _, codes, _, cnt = fn(W, rule="L1b")      # L1b: the encoder input is amax / 6
@@ -50,7 +51,7 @@ def stats(name, table, M, codes, x, counters, bound):
     rel_err = np.abs(scales - x) / x                   # distance from the ideal scale amax/6, relative
     counts = np.bincount(codes, minlength=256)         # blocks per code, index = code
     e = codes >> M
-    print(f"--- {name} (rule L1b, pooled W1+W2+W3, {len(SEEDS)} seeds) ---")
+    print(f"--- {DATASET} {name} (rule L1b, pooled W1+W2+W3, {len(SEEDS)} seeds) ---")
     print(f"blocks                 : {len(codes)}")
     print(f"code min / max         : {codes.min()} / {codes.max()}")
     print(f"distinct codes         : {(counts > 0).sum()} of 255")
@@ -71,13 +72,13 @@ def plot(results):
     for ax, (name, counts) in zip(axes, results):
         ax.bar(np.arange(256), counts, width=1.0)
         ax.axvline(254, color="red", linestyle="--", linewidth=1, label="code 254 (top scale)")
-        ax.set_title(f"{name}: scale codes of the trained weights (L1b, 3 seeds, 2430 blocks)")
+        ax.set_title(f"{DATASET} {name}: scale codes of the trained weights (L1b, {len(SEEDS)} seeds, {counts.sum()} blocks)")
         ax.set_ylabel("blocks")
         ax.legend()
     axes[-1].set_xlabel("scale code (0 to 255)")
     fig.tight_layout()
     os.makedirs(OUT_DIR, exist_ok=True)
-    path = os.path.join(OUT_DIR, "l1_scale_hist.png")
+    path = os.path.join(OUT_DIR, f"l1_scale_hist_{DATASET}.png")
     fig.savefig(path, dpi=150)
     print("saved", os.path.abspath(path))
 
