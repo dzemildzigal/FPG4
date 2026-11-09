@@ -5,7 +5,12 @@ the work that follows it.
 
 | Document | Content | Status |
 | :--- | :--- | :--- |
-| `spec.md` | The format, the scale algebra, and the integer datapath. Authority for numbers | Active, amended 2026-10-18 |
+| `engine.md` | What FPG4 is: a general purpose FP4 GEMM engine for inference and training. The model is a test fixture. The cost scoreboard, and the figure of merit | Active |
+| `spec.md` | The format, the scale algebra, and the integer datapath. Authority for numbers | Active, amended 2026-10-18. Five sections still stale, listed in `engine.md` section 8 |
+| `datapath.md` | One GEMM, stage by stage, from the payload codes to the encoded result. Widths, LUT counts, and what is decided | Active |
+| `experiment_plan.md` | The rungs and what each one is allowed to change | Active |
+| `experiment_L1.md` | L1, L1d, L1d-bias and L1e measured on MNIST and MNIST-1D | Active |
+| `experiment_L2.md` | L2, QAT on the weights only. Written, not yet run | Active |
 | `contract.md` | The training datapath: model, optimizer, rounding points, metrics | Not written |
 | `ladder.md` | The experiments L0 to L8, one factor per rung | Not written |
 | `results.md` | The measured curve of every rung, with the seed spread | Not written |
