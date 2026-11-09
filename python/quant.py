@@ -3,13 +3,26 @@ import numpy as np
 def sqnr(W, Wq):
     return 10 * np.log10(np.sum(W**2) / np.sum((W - Wq)**2))
 
-def quantize_payload(Wb, scales):
-    CODES=np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+# The 8 magnitudes that the 4-bit payload can store. The payload is a sign bit plus the index into this list.
+PAYLOAD_CODES = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
+# The same 8 magnitudes as integers, in units of 0.5: 0,1,2,3,4,6,8,12. A product of two of them is an integer.
+# The largest product is 12 * 12 = 144, which needs 8 bits. Nothing rounds in that product, so there is no FP4 multiplier.
+PAYLOAD_INTS = (2 * PAYLOAD_CODES).astype(np.int32)
+
+def payload_index(Wb, scales):
+    # The payload code of every element: the index (0..7) of the closest PAYLOAD_CODES value.
+    # Wb is (rows, blocks, 16), scales is (rows, blocks, 1), the result is (rows, blocks, 16) int64.
     r = np.abs(Wb) / scales #scale the absolute value of Wb by it's already calculated block scaling factors to get it in range of CODES.
-    idx = np.argmin(np.abs(r[..., None] - CODES), axis=-1) #find the index of the code in CODES closest to the scaled absolute value of Wb, this is where the quantization rounds to nearest.
-    Wbq = np.sign(Wb) * CODES[idx] * scales # (N, B, block) * (N, B, block) * (N, B, 1) 
-    #we return Wbq and the corresponding scale_codes, not the quantization codes and sqnr
-    return Wbq
+    return np.argmin(np.abs(r[..., None] - PAYLOAD_CODES), axis=-1) #find the index of the code in CODES closest to the scaled absolute value of Wb, this is where the quantization rounds to nearest.
+
+def decode_payload(sign_source, idx, scales):
+    # Turn a payload code back into a number: sign * magnitude * scale.
+    return np.sign(sign_source) * PAYLOAD_CODES[idx] * scales # (N, B, block) * (N, B, block) * (N, B, 1)
+
+def quantize_payload(Wb, scales):
+    # Round to nearest payload code. Returns the decoded values, not the codes. The codes are in payload_index().
+    idx = payload_index(Wb, scales)
+    return decode_payload(Wb, idx, scales)
 
 
 def scale_table_builder(E, M, bias):
@@ -92,17 +105,23 @@ def four6(Wb, amax6, amax4, scale_code6, scale_code4, rule):
     # for Wb_hat6, quantize the block with the amax6 scale
     # for Wb_hat4, quantize the block with the amax4 scale
     # then compare sum(|Wb-Wb_hat|)for the two, keep the lower, tie goes to amax6
-    
-    # Wb_hat6, quantize Wb with the amax6 scale
+    #
+    # Returns 4 values, because the datapath experiment (L1e) needs the payload codes and the scale that won:
+    #   Wb_hat      (rows, blocks, 16)  the decoded values
+    #   scale_codes (rows, blocks)      the 8-bit code of the scale that won
+    #   idx         (rows, blocks, 16)  the payload code index (0..7) of every element
+    #   scales      (rows, blocks, 1)   the scale value that won
     if rule not in ["L1b", "L1c"]:
         raise ValueError("Invalid rule specified for four6 quantization")
-    Wb_hat6 = quantize_payload(Wb, amax6)
+    idx6 = payload_index(Wb, amax6)
+    Wb_hat6 = decode_payload(Wb, idx6, amax6)
     if rule == "L1b":
         # For rule "L1b", we return amax6-quantized Wb directly
-        return Wb_hat6, scale_code6
+        return Wb_hat6, scale_code6, idx6, amax6
     if rule == "L1c":
         # Wb_hat4, quantize Wb with the amax4 scale
-        Wb_hat4 = quantize_payload(Wb, amax4)
+        idx4 = payload_index(Wb, amax4)
+        Wb_hat4 = decode_payload(Wb, idx4, amax4)
         # compute the quantization error for each block
         err6 = Wb - Wb_hat6
         err4 = Wb - Wb_hat4
@@ -113,8 +132,27 @@ def four6(Wb, amax6, amax4, scale_code6, scale_code4, rule):
         #we need to return Wb_hat, codes, sqnr
         Wb_hat = np.where(mask, Wb_hat6, Wb_hat4)
         scale_codes = np.where(mask[..., 0], scale_code6, scale_code4) # mask is (N, B, 1), the codes are (N, B)
-        return Wb_hat, scale_codes
+        idx = np.where(mask, idx6, idx4)
+        scales = np.where(mask, amax6, amax4)
+        return Wb_hat, scale_codes, idx, scales
 
+
+def quantize_blocks(B, table, rule="L1b"):
+    # The one place where a block tensor becomes FP4. Weights and activations both come through here.
+    # B is (rows, blocks, 16). The caller arranges the blocks, because a weight blocks along K
+    # and an activation already has K in its last axis.
+    # Returns (B_hat, scale_codes, idx, scales, counters):
+    #   B_hat       (rows, blocks, 16)  decoded values, float64
+    #   scale_codes (rows, blocks)      the 8-bit scale code of each block
+    #   idx         (rows, blocks, 16)  the payload code index (0..7) of each element
+    #   scales      (rows, blocks, 1)   the scale value of each block
+    #   counters    dict                the 4 counters of scale_counters
+    amax = np.max(np.abs(B), axis=2, keepdims=True) # the largest magnitude in each block, (rows, blocks, 1)
+    scale6, scale_code6 = encode_scale(amax / 6.0, table) # block scale that puts amax at the top payload code 6
+    scale4, scale_code4 = encode_scale(amax / 4.0, table) # block scale that puts amax at payload code 4
+    counters = scale_counters(amax, table)
+    B_hat, scale_codes, idx, scales = four6(B, scale6, scale4, scale_code6, scale_code4, rule)
+    return B_hat, scale_codes, idx, scales, counters
 
 
 def quantize_fp4_b_fp64(W, block=16):
@@ -130,43 +168,65 @@ def quantize_fp4_b_fp64(W, block=16):
     Wq = Wb_hat.reshape(Wt.shape).T
     return Wq, None, sqnr_wb, None
 
+def quantize_blocks_weights(W, table, rule="L1b", block=16):
+    # Weights. W is (K, N): K is the accumulation axis, N is the number of outputs of the layer.
+    # A block runs along K, so the matrix is transposed first: Wt is (N, K) and then K is cut into blocks.
+    # This is the only place where the transpose happens. quantize_blocks then sees the same
+    # (rows, blocks, 16) layout that an activation gives, so both operands share one core.
+    # Returns (Wq, scale_codes, idx, scales, counters), with idx and scales in the (N, blocks, ...) layout.
+    K, N = W.shape
+    if K % block != 0:
+        raise ValueError(f"K must be a multiple of {block}, got {K}")
+    Wt = W.T
+    Wb = Wt.reshape(N, K // block, block)
+    Wb_hat, scale_codes, idx, scales, counters = quantize_blocks(Wb, table, rule)
+    return Wb_hat.reshape(N, K).T, scale_codes, idx, scales, counters
+
 def quantize_fp4_b_e6m2(W, block=16, rule="L1b"):
-    # -> (Wq, codes, sqnr)
+    # -> (Wq, codes, sqnr, counters)
     # difference to fp64 is now our block scaling factor is also fixed point 8-bit E6M2
-    
+
     Wt = W.T #(N, K)
     Wb = Wt.reshape(Wt.shape[0], Wt.shape[1] // block, block) #format it into blocks. Now it's a 3D matrix, same rows, but columns are now (old_cols//block_size, block_size)
-    amax = np.max(np.abs(Wb), axis=2, keepdims=True) # also a 3D matrix, with dim (old_rows, old_cols//block_size, 1) representing the maximum absolute value within each block of the original weight matrix
     #for E6M2, the scaling factor needs to be clamped to the closest to result of four6 value in E6M2 from amax
-    amax6, scale_code6 = clamp_to_e6m2(amax / 6.0) # clamp each block's maximum absolute value *divided by 6* to the nearest representable E6M2 value (not index of the E6M2 table)
-    amax4, scale_code4 = clamp_to_e6m2(amax / 4.0) # similarly, clamp each block's maximum absolute value *divided by 4* to the nearest representable E6M2 value (not index of the E6M2 table)
-
-    counters = scale_counters(amax, e6m2)
-    Wb_hat, scale_codes = four6(Wb, amax6, amax4, scale_code6, scale_code4, rule) # Replace with actual L1c logic if different
-
-    #use quantize_payload to quantize each block of Wb using the computed scales
-    # Wb_hat is already the quantized result from four6, no need for additional quantization
+    Wb_hat, scale_codes, _, _, counters = quantize_blocks(Wb, e6m2, rule)
     Wq = Wb_hat.reshape(Wt.shape).T
     return Wq, scale_codes, sqnr(W, Wq), counters
 
 def quantize_fp4_b_e5m3(W, block=16, rule="L1b"):
-    # -> (Wq, codes, sqnr)
+    # -> (Wq, codes, sqnr, counters)
     # difference to fp64 is now our block scaling factor is also fixed point 8-bit E5M3
-    
+
     Wt = W.T #(N, K)
     Wb = Wt.reshape(Wt.shape[0], Wt.shape[1] // block, block) #format it into blocks
-    amax = np.max(np.abs(Wb), axis=2, keepdims=True) #/6 because magnitude of FP4 is max 6
-    #for E5M3, the scaling factor needs to be clamped to the closest to result of four6 value in E5M3 from amax
-    amax6, scale_code6 = clamp_to_e5m3(amax / 6.0)
-    amax4, scale_code4 = clamp_to_e5m3(amax / 4.0)
-
-    counters = scale_counters(amax, e5m3)
-    Wb_hat, scale_codes = four6(Wb, amax6, amax4, scale_code6, scale_code4, rule) # Replace with actual L1c logic if different
-
-    #use quantize_payload to quantize each block of Wb using the computed scales
-    # Wb_hat is already the quantized result from four6, no need for additional quantization
+    Wb_hat, scale_codes, _, _, counters = quantize_blocks(Wb, e5m3, rule)
     Wq = Wb_hat.reshape(Wt.shape).T
     return Wq, scale_codes, sqnr(W, Wq), counters
+
+def quantize_blocks_act(A, table, rule="L1b", block=16):
+    # Activations. A is (N, K): one row per sample, K along the accumulation axis.
+    # The block axis is K, the same axis the weights are blocked along, so the two operands of one MAC tile
+    # share a 16-long slice and each has one scale. No transpose: unlike a weight (K, N), the activation
+    # already has K in its last axis.
+    # Returns (Aq, scale_codes, idx, scales, counters), the same 5 values as quantize_blocks.
+    n, K = A.shape
+    if K % block != 0:
+        raise ValueError(f"K must be a multiple of {block}, got {K}")
+    Ab = A.reshape(n, K // block, block)
+    Ab_hat, scale_codes, idx, scales, counters = quantize_blocks(Ab, table, rule)
+    return Ab_hat.reshape(n, K), scale_codes, idx, scales, counters
+
+def quantize_fp4_b_act(A, table, rule="L1b", block=16):
+    # Same interface as the weight functions: (Aq, codes, sqnr, counters).
+    Aq, scale_codes, _, _, counters = quantize_blocks_act(A, table, rule, block)
+    return Aq, scale_codes, sqnr(A, Aq), counters
+
+def act_quantizer(table, rule="L1b"):
+    # Closures for model.forward(p, X, quant=...). The hook gets one tensor and returns (quantized tensor, counters).
+    def quant(A):
+        Aq, _, _, counters = quantize_fp4_b_act(A, table, rule)
+        return Aq, counters
+    return quant
 
 def test_quantize_fp4_b_fp64():
     from mnist import get_x_y_test
