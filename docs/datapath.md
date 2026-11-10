@@ -345,6 +345,35 @@ after the round to a byte. The `ceil(log2(nb))` is proven from the term count.
 A model with `nb = 8192` gets 40 bits, and the bias store grows with it, because
 the bias is stored at the accumulator's width.
 
+**The exact condition under which a legal tensor defeats 32 bits.** A term has its
+own low bit at `2^E`. The register has one low bit at `2^F`, and `F` is forced by
+the largest term, because the largest term must not overflow. So a term loses bits
+if and only if `E < F`, and the bits lost by the smallest term is `span - width`
+when that is positive. Nothing else enters. `python/width_probe.py` builds three
+legal tensors to show it:
+
+| tensor | span | what 32 bits does |
+| :--- | ---: | :--- |
+| trained weights, Gaussian input | 20 | nothing, exact |
+| one block of both operands at the floor of the scale window | 40 | 8 bits lost from 1.7% of the terms, SQNR 191.2 dB |
+| one block at the floor and another at the top of the window | 51 | 19 bits lost from 1.7% of the terms, SQNR 230.1 dB |
+
+Every scale in those three tensors is legal for UE5M3. The floor case takes scale
+code 0 and the payloads stay below saturation, so nothing is clamped.
+
+**The failure is self-limiting, and that is why it does not matter.** The bits that
+are lost sit `span - 32` octaves below the top of the largest term. So the wider the
+spread, the smaller the error the spread causes, and the SQNR in the table goes UP
+as the span goes up. The wider tensor is exact in the part that carries the answer.
+
+**The one case that is not self-limiting.** If the large terms cancel and the answer
+is decided by the terms that lost their bits, the error is the whole answer. A term
+loses its bits entirely only when its low bit is far below `2^F` and its own
+mantissa does not reach up to it, which takes `span` above about 47. So it takes a
+span above 47 and cancellation between two large terms at the same time. A trained
+network does neither. The block maxima of a real layer span 4.5 decades, which is 15
+octaves, and the terms of one reduction do not cancel to 47 bits.
+
 **What this means for the width.** An exact sum of one reduction needs the whole
 span: 25 bits on MNIST and 30 on MNIST-1D. The built 32 covers both, so on these
 two datasets the register drops no bit. That is a measurement and not a proof, and

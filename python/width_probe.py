@@ -111,3 +111,77 @@ def main():
 
 
 main()
+
+
+# ---------------------------------------------------------------------------
+# Can a legal weight set and input need more than 32 bits? Yes. This section
+# builds one and measures what a 32-bit register does to it.
+#
+# The condition is one line. A term has its own low bit at 2^E and an integer
+# mantissa. The register has one low bit at 2^F, and F is forced by the largest
+# term, because the largest term must not overflow. So a term loses bits if and
+# only if E < F. Over a whole reduction that is:
+#
+#     bits dropped from the smallest term = max(0, span - width)
+#
+# with span = top - low + 1. Nothing else enters.
+# ---------------------------------------------------------------------------
+
+FLOOR = 2.0 ** -15          # the smallest block scale UE5M3 can express, code 0
+
+
+def exceed(name, W, X):
+    Wq, _, idxW, sW, _ = q.quantize_blocks_weights(W, q.e5m3, "L1c")
+    Aq, _, idxA, sA, _ = q.quantize_blocks_act(X, q.e5m3, "L1c")
+    S = np.einsum("nbk,mbk->nmb", payload_ints(Aq, idxA),
+                  payload_ints(Wq.T, idxW)).astype(np.int64)
+    nw, ew = dyadic(sW[:, :, 0], 3)
+    na, ea = dyadic(sA[:, :, 0], 3)
+    mant = (S // 4) * nw[None, :, :] * na[:, None, :]
+    expo = ew[None, :, :] + ea[:, None, :]
+    nz = mant != 0
+    bits = np.zeros_like(mant)
+    bits[nz] = np.floor(np.log2(np.abs(mant[nz]))).astype(np.int64) + 1
+    top, low = int((bits + expo)[nz].max()), int(expo[nz].min())
+    span = top - low + 1
+
+    term = np.ldexp(mant.astype(np.float64), expo)
+    exact = term.sum(axis=2)
+    print("  %-46s span %2d  %s 32" % (name, span, "OVER" if span > 32 else "under"))
+    for Wb in (32, 40):
+        F = top - (Wb - 1)
+        grid = 2.0 ** F
+        acc = (np.round(term / grid) * grid).sum(axis=2)
+        err = acc - exact
+        rmse = np.sqrt((err ** 2).mean())
+        den = np.sqrt((exact ** 2).mean())
+        frac = 100.0 * ((expo < F) & nz).sum() / nz.sum()
+        snr = "infinite" if rmse == 0 else "%.1f dB" % (20 * np.log10(den / rmse))
+        print("  %2d bits, low bit at 2^%3d: %5.1f%% of terms below the grid, SQNR %s"
+              % (Wb, F, frac, snr))
+
+def exceed_main():
+    from train import load_weights
+    P = load_weights(42)
+    rng = np.random.default_rng(7)
+    X = rng.standard_normal((512, 784))
+    print("### can legal tensors need more than 32 bits?")
+    exceed("trained weights, Gaussian input", P["W1"], X)
+
+    # One block of both operands pushed to the floor of the window. Legal: the scale
+    # takes code 0, the payloads stay small, nothing saturates.
+    W = P["W1"].copy()
+    W[16:32, :] *= 2.0 ** -8
+    Xb = X.copy()
+    Xb[:, 16:32] = rng.uniform(-1e-5, 1e-5, size=(512, 16))
+    exceed("one block at the floor of the window", W, Xb)
+
+    # The same, plus one block pushed to the top, so the span grows from both ends.
+    W2 = W.copy()
+    Xc = Xb.copy()
+    W2[400:416, :] *= 2.0 ** 6
+    Xc[:, 400:416] *= 2.0 ** 6
+    exceed("one block at the floor and one at the top", W2, Xc)
+
+
+exceed_main()

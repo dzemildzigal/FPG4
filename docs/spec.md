@@ -1,6 +1,6 @@
 # FPG4 specification
 
-Version 0.8. Status: draft.
+Version 0.9. Status: draft.
 
 ## 1. Purpose
 
@@ -385,6 +385,15 @@ scale products, which requirement 1 does not see at all. Measured by
 | MNIST-1D | UE6M2 | 15 | 21 | 28 | `2^5` | `2^-22` |
 | MNIST-1D | UE5M3 | 17 | 23 | 30 | `2^5` | `2^-24` |
 
+**The failure condition is exact and it is short.** A term loses bits if and only if
+its own low bit sits below the register's low bit, which is `span - width` bits for
+the smallest term. A legal tensor can exceed 32: `python/width_probe.py` builds one
+with a span of 40 and one with a span of 51, both from legal scales, and both stay
+above 190 dB of signal to noise ratio, because the bits that are lost sit that many
+octaves below the largest term. The failure is self-limiting. Section 4.5 of
+`datapath.md` gives the one case where it is not, which needs a span above 47 and
+cancellation between two large terms at the same time.
+
 **The worst entry is 30 bits and the built accumulator is 32, so on these two
 datasets the register drops no bit.** The two bits are the whole margin, and they
 are a bet on the data, because requirement 2 is not bounded. `P` is a product of two
@@ -629,5 +638,6 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
 | 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
 | 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |
+| 0.9 | 2026-11-09 | Section 5.7 and `datapath.md` section 4.5 now state the exact condition under which a legal tensor defeats 32 bits, and the measurement that shows the failure is self-limiting: a span of 40 gives 191.2 dB and a span of 51 gives 230.1 dB. `python/width_probe.py` builds both. |
 | 0.8 | 2026-11-09 | Section 5.7 now separates two requirements. Requirement 1 is the sum and it grows with `nb`. Requirement 2 is the single binary point and it grows with the spread of the scale products. Section 5.5 and section 6 follow. Every width number is replaced by the measurement in `python/width_probe.py` on the test sets: 25 bits on MNIST and 30 on MNIST-1D, against a built 32. The earlier 29-bit and 35-bit spans are withdrawn, because both added a bit width to a ratio of term magnitudes. |
 | 0.7 | 2026-11-09 | The layer accumulator is the fixed binary point of `datapath.md`. Section 5.7 is rewritten to `width = 20 + ceil(log2(nb))` rounded up to a multiple of 8, which is 32 bits for the reference model. The guard-bit form stays as the insurance bound and is no longer the design, so sections 5.6, 6, 10 and 11 are rewritten to match. Section 5.8 is added, for the bias at the accumulator width. Section 9 states that the encoder is not designed, and removes the encoder counts that came from `rtl-plan.md`. `results-e8.md` is restored to the repository. The two naming series of section 10 are distinguished. |
