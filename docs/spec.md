@@ -406,7 +406,9 @@ There is no decoder and no adder.
 
 Its width is the accumulator width of section 5.7, because it is the initial value
 of that register. It is 32 bits for this model, which is 1,344 bits for the 42 bias
-values against a weight store of 58,509 bits, that is 1.4 percent.
+values against a weight store of 58,509 bits, and that is 2.3 percent of the store.
+Against the FP4 per-value store of 504 bits, the extra is 840 bits, which is 1.4
+percent of the store and 105 bytes.
 
 An FP4 bias store was measured and rejected. One shared scale per layer loses up
 to 1.14 points of accuracy, and one scale per value costs 42 extra scale constants

@@ -384,9 +384,18 @@ load is a wire. Zero logic, zero cycles, zero MACs.
 | FP4 payload, one shared scale per layer | 4*16+8 and 4*10+8 = 120 | 58,629 | loses up to 1.14 points |
 
 The weight store is 13,002 values in blocks of 16 payloads plus one 8-bit scale,
-which is 4.5 bits per value, 58,509 bits. So 32-bit biases cost **1.4% of the
-store, 840 bits, 105 bytes.** That is the whole price of not having a second
-encoder rule for a 42-value tensor.
+which is 4.5 bits per value, 58,509 bits. Two numbers matter, and they are
+different numbers:
+
+| number | bits | share |
+|---|---:|---:|
+| what the 32-bit bias store costs in total | 1344 | **2.3% of the weight store** |
+| what it costs **above** the FP4 per-value store of 504 bits | 840 | **1.4% of the weight store**, 105 bytes |
+
+**105 bytes is the whole price of not having a second encoder rule for a 42-value
+tensor.** The 1.4% is the price against the FP4 option. The 2.3% is the price of
+the bias in the store, and it is paid whichever way the bias is stored, because
+even the FP4 option costs 504 bits.
 
 **And the claim in section 2 still holds.** It is about values that enter a
 multiply. The bias enters none. 42 values of 13,002 are outside the block format
@@ -661,7 +670,7 @@ Expect a power saving and no area saving.
 | layer accumulator | two's complement fixed point, at the width the rule gives. **32 bits for this model** | **decided** |
 | layer accumulator width rule | `20 + ceil(log2(nb))` bits rounded up to a multiple of 8. 32 for this model, 40 at `nb = 8192` | **decided**, and **32 is not a constant**. The earlier "stick to 32" answer is withdrawn |
 | layer accumulator width, evidence | 20 bits measured as sufficient, below 16 untested | **open** |
-| bias storage | **at the accumulator width, signed fixed point, the accumulator's binary point.** 32 bits per value for this model, 1344 bits, +1.4% of the weight store | **decided**, the FP4 store is rejected in 4.6 with its measurements |
+| bias storage | **at the accumulator width, signed fixed point, the accumulator's binary point.** 32 bits per value for this model, 1344 bits. That is 2.3% of the weight store, and 1.4% above the FP4 alternative | **decided**, the FP4 store is rejected in 4.6 with its measurements |
 | bias add | the accumulator width, fixed point, loaded as the accumulator's **initial value**. No decoder, no adder | **decided**, corrected from "added after the last term" |
 | bias folded into the reduction | rejected. `nb` goes 1 to 2 on layers 2 and 3 | **decided against** |
 | `b3` padding to 16 | not padded. It is not a block, it is 10 constants | **decided** |
