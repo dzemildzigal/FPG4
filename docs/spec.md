@@ -333,11 +333,6 @@ point are both open. No measurement separates them yet.
 2. **If it is fixed point, the position of the point is not decided.** No value of
    `F` is assumed anywhere in this document, and no section may use one.
 
-Earlier revisions of this section stated `F = ceil(log2(max absolute C)) - 31` as a
-rule. **That was not a decided rule.** It was a number chosen inside one script so
-that an experiment could run, and it was written here as if the decision had been
-made. It is withdrawn. The decision is open, and section 11 records it.
-
 What the datapath does require, whichever way the decision goes, is that every term of
 one reduction reaches one common point before the add. That is arithmetic and not a
 choice: terms arrive at different exponents, and a sum needs one scale.
