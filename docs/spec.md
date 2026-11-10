@@ -1,31 +1,52 @@
 # FPG4 specification
 
-Version 0.2. Status: draft. Owner: Dzemo.
+Version 0.6. Status: draft.
 
 ## 1. Purpose
 
-This document defines FPG4. FPG4 is an FPGA microarchitecture for a published 4-bit format. It is not a new datatype. The document defines four things:
+This document defines FPG4. FPG4 is an FPGA microarchitecture for FP4 inference and training of NN's.
+In this doc we define:
 
-1. The numeric format, called FPG4-FMT.
-2. The exact integer datapath that implements FPG4-FMT in FPGA fabric.
+1. The numeric format.
+2. The exact integer datapath that implements the format in 1. in FPGA fabric.
 3. The error budget of that datapath.
 4. The reference model and the experiments that gate the hardware work.
 
-Any implementation of FPG4 must make sure that its output bits agree with the reference model in section 8. A disagreement is a defect in the implementation, not a rounding difference.
+
+### Cross-references
+
+This document refers to sections of four documents that are not in this repository:
+`docs/motivation.md`, `docs/rtl-plan.md`, `docs/results-e1-e3.md` and
+`docs/results-e8.md`. They are in `FPG4-archive-2026-10-18/docs/`.
+
+Two of those references carry open work. Section 5.6 and section 5.7 describe the
+alignment form and the accumulator width of `rtl-plan.md`. That form is not yet
+reconciled with the measured accumulator width of `datapath.md`, which is
+`20 + ceil(log2(nb))` bits rounded to a byte, against the `T_bits + G + ceil(log2
+n)` form below. Section 9 takes the encoder counts and the look-up-table share
+from `rtl-plan.md`, and the encoder is not designed yet.
 
 ### 1.1 Decision status
 
-The scale configuration is not decided. Two configurations are registered, UE5M3 and UE6M2, and section 4.3 defines both. The decision stays open until experiment E7 measures end-to-end training.
+The scale configuration is not decided (UE6M2 vs UE5M3). 
+The reason for the open decision is that we still haven't identified an experiment that would clearly mark one better than the other. 
 
-The reason for the open decision is one failure mode. A tensor with a very wide dynamic range can produce a block maximum that is above the top of the UE5M3 window. A single very large activation value is enough. Only the UE6M2 configuration reaches such a block. The measurement is in `docs/results-e1-e3.md`, section 4.
+The scale selection rule is not decided either (`four6` vs `amax6`). The two rules are within the seed noise of each other on two datasets, and the encoder area cost of `four6` is not measured yet. No default is taken.
 
 ## 2. Terms
 
-A payload is the 4-bit element value. A block is a group of 16 consecutive payload values along the contraction dimension K. A block scale is the single 8-bit value that applies to one block. A contraction dimension is the dimension that the dot product sums over. A code is the integer form of one payload value, as defined in section 5. A guard bit is an extra low-order bit that keeps the datapath exact. A flush is the replacement of a value by zero when the value is too small to align.
+
+- A **payload** is the 4-bit element value.
+- A **code** is the integer form of one payload value, as defined in section 5.
+- A **block** is a group of 16 consecutive payload values along the contraction dimension K.
+- A **block scale** is the single 8-bit scaling factor that applies to one block.
+- A **contraction dimension** is the dimension that the dot product sums over.
+- A **guard bit** is an extra low-order bit.
+- A **flush** is the replacement of a value by zero when the value is too small to align.
 
 ## 3. Prior art and the position of this work
 
-The format is published. FPG4 cites it and does not claim it.
+Parts of this format are published. FPG4 cites them.
 
 | Work | Contribution | Relationship to FPG4 |
 | :--- | :--- | :--- |
@@ -38,14 +59,14 @@ The format is published. FPG4 cites it and does not claim it.
 | arXiv 2310.10537, the MX paper | States that the principal axis of the shared scale is the reduction dimension, and that transposing an MX tensor changes that axis | FPG4 uses the same rule, and section 6 of `docs/motivation.md` records it |
 | RPTQ, arXiv 2304.01089. TAGQuant. PermuQuant, arXiv 2605.09503. OCGQuant, arXiv 2609.00066. | A family that groups elements by value. It is a different model of a block. | Section 6.2 of `docs/motivation.md` states the difference. Section 3 of the MX paper states the rule that FPG4 follows. |
 
-The claim of FPG4 is the datapath. The claims are:
+The claim of FPG4 is the train+inference framework. The claims are:
 
 1. No DSP slice is used anywhere in the arithmetic path.
 2. The arithmetic is exact in integers, with a provable and bounded accumulator width.
 3. No tensor-level reference and no second quantization pass are needed.
 4. The layout is bit-identical to the published UE5M3 block-level recipe when the UE5M3 configuration is selected.
 
-## 4. FPG4-FMT
+## 4. FPG4 FP4 datatype
 
 ### 4.1 Payload
 
@@ -79,22 +100,24 @@ The block size B is 16 payload values. The block runs along the contraction dime
 
 ### 4.3 Block scale
 
-The block scale is an unsigned 8-bit value. The split of the eight bits is a parameter of the implementation. The parameter is called the scale configuration. Two configurations are registered.
+The block scale is an unsigned 8-bit value. The split of the eight bits is a parameter of the implementation. 
+The parameter is called the scale configuration. Two configurations are registered, UE5M3 and UE6M2.
 
-| Configuration | Exponent bits | Mantissa bits | Bias | Top exponent code |
-| :--- | ---: | ---: | ---: | :--- |
-| UE5M3 | 5 | 3 | 15 | Reserved. **Amended 2026-10-18: only code 255 is NaN. See the amendment below.** |
-| UE6M2 | 6 | 2 | 31 | Used. **Amended 2026-10-18: code 255 is NaN.** |
 
-Let E be the number of exponent bits, M the number of mantissa bits, and B the bias. The code splits into an exponent field e in the top E bits and a mantissa field m in the low M bits. Let T be 2^E - 1, the top exponent code.
+| Configuration | Exponent bits | Mantissa bits | Bias | Finite codes | Special code |
+| :--- | ---: | ---: | ---: | :--- | :--- |
+| UE5M3 | 5 | 3 | 15 | 0 to 254 | 255 is NaN |
+| UE6M2 | 6 | 2 | 31 | 0 to 254 | 255 is NaN |
+
+Let E be the number of exponent bits, M the number of mantissa bits, and B the bias.
+The code splits into an exponent field e in the top E bits and a mantissa field m in the low M bits.
 
 The scale value s is:
 
-- If the configuration has a subnormal band and e = 0: s = m * 2^(1 - B - M). **Superseded on 2026-10-18. No configuration has a subnormal band.**
-- Otherwise: s = (1 + m / 2^M) * 2^(e - B).
-- If the top exponent code is reserved and e = T: the encoder must not emit it. The decoder reads it as the largest finite value. **Superseded on 2026-10-18. See the amendment below.**
+- Code 0 to 254: s = (1 + m / 2^M) * 2^(e - B).
+- Code 255: NaN. Every value in the block is NaN, and the payload bits are ignored.
 
-Only the UE5M3 configuration has a subnormal band. The UE6M2 configuration uses every code for a finite value. **Superseded on 2026-10-18. See the amendment below.**
+No configuration has a subnormal band and no configuration has a zero scale.
 
 #### Amendment 2026-10-18: special codes of the block scale
 
@@ -114,9 +137,8 @@ the IEEE habit of a non-finite top exponent. That is a hypothesis, not a record.
 | D3 | No subnormal band | Both formats use `s = (1 + m / 2^M) * 2^(e - B)` for every e. UE5M3 code 0 is `2^-15`. UE6M2 code 0 is `2^-31`. No configuration has a zero scale |
 
 The measured E1 audit (synthetic multilayer perceptron, 400 steps, bias 15) shows
-0.00 percent of blocks in the subnormal band, and a lowest exponent field of 1.
-That is a hint and not a proof. The MNIST scale-code histogram of L1b checks it.
-If blocks reach the bottom of the window, the band returns.
+a lowest exponent field of 1. That is a hint that no block comes near the bottom
+of the window. It is not a proof. The MNIST scale-code histogram of L1b checks it.
 
 A zero scale is not needed to represent a zero block. A zero block has payload
 index 0 in every element, and `0 * s = 0` for any finite `s`. A zero scale is a
@@ -150,51 +172,47 @@ on the subnormal band, because every N field is now `2^M + m`.
 Name rule: the U in UE5M3 and UE6M2 means unsigned, so the code has no sign bit.
 Both formats have a bias. A signed E5M3 has 9 bits and does not fit in 8.
 
-Sections that this amendment affects, to update when the text is next revised:
+Where this amendment applies. Every row below is now in the text of this document:
 
-| Place | Old text | New rule |
+| Place | Text before the amendment | Text now |
 | :--- | :--- | :--- |
+| Section 4.3, the table and the definition of s | The top exponent code of UE5M3 was reserved. Two bullets described a subnormal band and a reserved code | Every code from 0 to 254 is finite, and code 255 is NaN. One formula for every e. No subnormal band |
 | Section 4.3, last paragraph before 4.4 | No infinity and no NaN | NaN at code 255, no infinity |
 | Section 4.4 step 6 | Zero scale repaired to code 1 | `amax = 0` takes code 0 |
 | Section 5.3 | N is `2 * m` at e = 0 | N is `2^M + m` for every e |
-| Section 5.3, bound on N | N at least 2 | N at least `2^M` |
-| Section 5.4, N table | 16 entries for UE5M3 | 8 entries for both formats |
+| Section 5.3, bound on N | N at least 2 | N at least `2^M`, which is 8 for UE5M3 and 4 for UE6M2 |
+| Section 9, the table that decodes N | 16 entries for UE5M3, 8 for UE6M2 | 8 entries for both formats |
 | Section 8, test 3 | Repaired scale code 1 | Scale code 0 |
 | `ref/fpg4.py`, `ref/dump_vectors.py` | Old rules | Archived, not repaired. The new `python/quant.py` is the live implementation |
 
-Two numbers follow from the split. The precision follows from M alone. The width of the window follows from E alone.
-
-| Configuration | Window in block-maximum decades | Largest relative scale error |
-| :--- | ---: | ---: |
-| UE5M3, bias 15 | 9.91, from 4.58e-5 to 3.69e5 | 5.88 percent |
-| UE6M2, bias 31 | 19.21, from 2.79e-9 to 4.51e10 | 11.1 percent |
-
 The bias moves the window. It does not change the width of the window. Section 11 records the open decision.
 
-Both configurations have no infinity and no NaN. A scale value above the largest finite value saturates. **Amended 2026-10-18: both configurations have a NaN at code 255 and no infinity. A finite scale value above the largest finite value saturates to code 254.**
+The window and the largest relative scale error are in the table above: 9.58 decades and 5.88 percent for UE5M3, 19.14 decades and 11.1 percent for UE6M2. The precision follows from M alone. The width of the window follows from E alone.
+
+Both configurations have a NaN at code 255 and no infinity. A finite scale value above the largest finite value saturates to code 254, and the encoder counts that block as saturated. A zero block is not a special case at the scale level: payload index 0 in every element gives zero for any finite scale.
 
 ### 4.4 Quantizer
 
 The encoder reads 16 elements, called a block, and it produces one 8-bit scale code and sixteen 4-bit payload codes. The encoder sees one block only. It never reads the whole tensor, and it never sees a second block.
 
-The selected rule is `four6`. The rule tests two candidate scale codes and keeps the better one.
+Two rules are registered, `four6` and `amax6`. The rule `four6` tests two candidate scale codes and keeps the better one. It is the reference rule, and steps 1 to 8 below describe it. **Neither rule is chosen.** The measurements of L1 on two datasets do not separate them, and this project does not take a default. The `amax6` rule is described after step 8.
 
 1. Compute amax, the largest absolute value in the block.
 2. Candidate `c6` is the scale code nearest to `amax / 6`. Candidate `c4` is the scale code nearest to `amax / 4`.
 3. Encode the block with `c6`, and then with `c4`. Step 7 defines the encoding of one candidate.
 4. Compute the absolute error of each candidate. The error is the sum over the 16 elements of `|x - x_hat|`.
 5. Keep the candidate with the smaller error. A tie goes to `c6`.
-6. If the chosen scale value is zero, replace the choice with scale code 1. This is the zero-scale repair rule. **Superseded on 2026-10-18. No scale code is zero. A block with `amax = 0` takes code 0.**
+6. If `amax` is zero, the block takes scale code 0 and every payload code takes index 0. There is no other repair case, because no scale code is zero.
 7. Encode each element against the chosen scale. Compare the absolute value against the seven thresholds of the payload grid, each one multiplied by s. Take the nearest value. A tie goes to the even mantissa bit.
 8. Count the elements with a magnitude above `6 * s` as saturated.
 
 Step 2 uses the thresholds of the scale grid in the amax domain. The threshold between two adjacent scale values `s_lo` and `s_hi` is `d * (s_lo + s_hi) / 2`, where `d` is 6 for `c6` and 4 for `c4`. Both forms are dyadic. The form for `c6` is `3 * (s_lo + s_hi)`, and the form for `c4` is `2 * (s_lo + s_hi)`.
 
-The encoder divides nowhere. Every threshold is the product of a small dyadic constant and a scale value, so every comparison is exact in binary. The RTL uses this form. Test 4 of the conformance suite proves that the fast path agrees with an encoder that uses exact rational arithmetic. Test 10 proves the scale algebra.
+The encoder divides nowhere. Every threshold is the product of a small dyadic constant and a scale value, so every comparison is exact in binary. The RTL uses this form. Test 8 of the conformance suite proves that the fast path agrees with an encoder that uses exact rational arithmetic. Test 9 proves the scale algebra.
 
 Decoding is `x_hat = c / 2 * s`.
 
-An implementation may ship the rule `amax6`, which tests `c6` only and skips steps 3 to 5. The rule is cheaper and it costs 0.70 dB on the real tensors. Experiment E9 measures whether the encoder for `four6` closes timing inside the block time.
+An implementation may ship the rule `amax6`, which tests `c6` only and skips steps 3 to 5. The rule is cheaper and it costs 0.70 dB of signal to noise ratio on the real tensors. The accuracy cost is not yet visible: on three seeds the two rules are within 0.25 points of accuracy on MNIST in both formats, and on MNIST-1D they move in both directions, by 2.01 points for UE6M2 and 2.69 points for UE5M3. The encoder area cost of the second pass is the open question, and experiment E9 measures it.
 
 ### 4.5 Rounding modes
 
@@ -236,15 +254,16 @@ S_b is an integer. The bound is |S_b| <= 16 * 12 * 12 = 2304. The block accumula
 
 Every scale value is an integer multiple of a power of two. Define the field N by
 
-    N = 2 * m     if e = 0        the subnormal band, UE5M3 only
-    N = 2^M + m   if e >= 1       the normal band
+    N = 2^M + m     for every e
 
-The scale value is then s = N * 2^(e - bias - M). The definition holds in the subnormal range and in the normal range.
+The scale value is then s = N * 2^(e - bias - M). There is one formula for every exponent code, because no configuration has a subnormal band.
 
-| Format | M | bias | s | N range, normal | N, subnormal | exponent offset for E |
-| :--- | ---: | ---: | :--- | ---: | :--- | ---: |
-| UE5M3 | 3 | 15 | N * 2^(e - 18) | 8 to 15 | 2 * m | 38 |
-| UE6M2 | 2 | 31 | N * 2^(e - 33) | 4 to 7 | none | 68 |
+| Format | M | bias | s | N range | exponent offset for E |
+| :--- | ---: | ---: | :--- | ---: | ---: |
+| UE5M3 | 3 | 15 | N * 2^(e - 18) | 8 to 15 | 38 |
+| UE6M2 | 2 | 31 | N * 2^(e - 33) | 4 to 7 | 68 |
+
+N at e = 0 is `2^M`, which is 8 for UE5M3 and 4 for UE6M2. Those are the smallest N values of a finite scale.
 
 The exponent offset is 2 * (bias + M + 1).
 
@@ -259,9 +278,9 @@ Define the product P = N_w * N_x and the exponent offset E = e_w + e_x - offset.
 
     D_b = S_b * P * 2^E
 
-Conformance test 10 checks the identity D_b = (s_w * s_x / 4) * S_b over all 65536 pairs of scale codes in both formats. The identity is exact, and it is the whole scale algebra of the datapath.
+Conformance test 9 checks the identity D_b = (s_w * s_x / 4) * S_b over all 65536 pairs of scale codes in both formats. The identity is exact, and it is the whole scale algebra of the datapath.
 
-The product P = N_w * N_x is a quantity of the algebra. It is in the range 0 to 225, so it needs 8 bits for UE5M3 and 7 bits for UE6M2. The datapath does not build P. It applies the two factors in two stages, so the only constant of each stage is one N field, and each N field is at most 15. Section 5.4 gives the structure. P appears in this specification only as a bound and as a name for the exact product. The encoder never emits a zero scale code, so N is at least 2 in a valid stream.
+The product P = N_w * N_x is a quantity of the algebra. It is in the range 64 to 225 for UE5M3 and 16 to 49 for UE6M2, so 8 bits covers both. The datapath does not build P. It applies the two factors in two stages, so the only constant of each stage is one N field, and each N field is at most 15. Section 5.4 gives the structure. P appears in this specification only as a bound and as a name for the exact product. The encoder never emits a zero scale code, so N is at least `2^M` in a valid stream, which is 8 for UE5M3 and 4 for UE6M2.
 
 The project ruled on the structure of the term unit on 2026-10-09, and it selected the two-stage form. Section 11 records the ruling and its cost.
 
@@ -271,7 +290,7 @@ E is in the range -38 to 22 for UE5M3, which is 7 bits with a sign, and -68 to 5
 
 The product S_b * P is exact. The tight bound on T_b depends on the format, because N is at most 15 for UE5M3 and at most 7 for UE6M2.
 
-| Format | Largest N | Bound on |T_b| | Width, signed |
+| Format | Largest N | Bound on the absolute value of T_b | Width, signed |
 | :--- | ---: | ---: | ---: |
 | UE5M3 | 15 | 2304 * 225 = 518,400 | 20 bits |
 | UE6M2 | 7 | 2304 * 49 = 112,896 | 18 bits |
@@ -370,11 +389,13 @@ Conformance tests:
 
 1. All 256 scale codes decode to the values in section 4.3.
 2. All 16 payload codes decode to the values in section 4.1.
-3. A block of all zeros produces a repaired scale code of 1 and a zero block sum.
+3. A block of all zeros produces scale code 0, payload index 0 in every element, and a zero block sum.
 4. A block with one outlier equals the case where the outlier is the maximum.
 5. A block that saturates reports a saturation count of at least one.
 6. A dot product of maximum codes equals 2304 for B = 16.
 7. The integer path agrees with the float path for a tolerance of zero, for a random test set of 10^6 elements, when E is positive.
+8. The threshold encoder of section 4.4 agrees with an encoder that uses exact rational arithmetic, over every block of the test vectors.
+9. The identity `D_b = (s_w * s_x / 4) * S_b` holds for every pair of scale codes in both formats, which is 65,536 pairs in each format, with tolerance zero.
 
 ## 9. Hardware plan
 
@@ -393,13 +414,13 @@ The build plan is `docs/rtl-plan.md`. It holds the architecture, the module list
 
 The processing element contains one 64 by 8 product read-only memory, one 13-bit block accumulator, and one boundary unit. The boundary unit contains the table that decodes the N field of each operand, the term unit of section 5.4, the alignment unit, and the group accumulator of section 5.7. The boundary unit holds no product table.
 
-The table that decodes the N field is a function of the mantissa field and the subnormal flag, so it holds 16 entries of 4 bits for UE5M3 and 8 entries of 4 bits for UE6M2. One 6-input look-up table holds a 64 by 1 read-only memory, so the whole table fits in one look-up table. Section 5 defines the table, and the count comes from the width of the mantissa field and not from synthesis.
+The table that decodes the N field is a function of the mantissa field alone, so it holds 8 entries of 4 bits for UE5M3 and 8 entries of 4 bits for UE6M2. One 6-input look-up table holds a 64 by 1 read-only memory, so the whole table fits in one look-up table. Section 5 defines the table, and the count comes from the width of the mantissa field and not from synthesis.
 
 The product of two payload elements is not a multiplication in the arithmetic sense. It is a table read of 8 look-up tables, and it stays that way.
 
 The datum has exactly one multiplication, and it is the term unit. The term unit holds two chained scale multiplications of the kind that the format defines. It holds no multiplier resource of any kind.
 
-Every scale code decodes to a value of the form N * 2 ** (e - bias - M). A multiplication of two scales is therefore an addition of the exponents and a multiplication of the two N fields. The exact dequantized value of one block is S_b * s_w * s_x / 4, and the datapath computes S_b * N_w * N_x * 2 ** E with E = e_w + e_x - offset. The two agree for every pair of scale codes, and conformance test 10 checks that fact.
+Every scale code decodes to a value of the form N * 2 ** (e - bias - M). A multiplication of two scales is therefore an addition of the exponents and a multiplication of the two N fields. The exact dequantized value of one block is S_b * s_w * s_x / 4, and the datapath computes S_b * N_w * N_x * 2 ** E with E = e_w + e_x - offset. The two agree for every pair of scale codes, and conformance test 9 checks that fact.
 
 The addition of the exponents is one 7-bit or 8-bit adder for each block. The product N_w * N_x is a small integer product of two 3-bit or 4-bit fields, and the term unit applies it to S in two stages.
 
@@ -451,7 +472,7 @@ Each experiment has a deliverable and a gate. A gate is the hardware decision th
 
 | ID | Experiment | Deliverable | Gate |
 | :--- | :--- | :--- | :--- |
-| E1 | Range audit over weights, activations, dY, dW and dX for a full training run. | Saturation rate, subnormal rate, and the required exponent window per tensor class. | The bias choice for the scale, the alignment width, and the validity of section 4.6. |
+| E1 | Range audit over weights, activations, dY, dW and dX for a full training run. | Saturation rate and the required exponent window for each tensor class. | The bias choice for the scale, the alignment width, and the validity of section 4.6. |
 | E2 | Scale-rule sweep at B = 16. Rules: four6, the second largest value, the 75th percentile, the lowest block error, and the oracle. | Error per rule, the dead zone, and the worst-block error. | The specification of the scale unit. Done on 2026-10-07. The rule is `four6`. |
 | E3 | Scale-format threat test at B = 16. Formats: E8M0, UE6M2, UE5M3, E4M3 with and without a tensor reference. | One error number and one table per format. | Whether the paper can defend the fraction bits in the scale. |
 | E4 | Reference-model conformance. | A pass or fail record against section 8. | The authority for all RTL comparison. |
@@ -492,4 +513,5 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.2 | 2026-10-09 | Experiment E5 sets the guard budget at 12 and the accumulator at T_bits + G + ceil(log2 NB) bits. Experiment E2 sets the rule at `four6` with the absolute-error test. Experiment E8 rejects delayed scaling and keeps the block buffer. The alignment reference is a pre-scan of the group scale codes. The RTL plan is added. |
 | 0.3 | 2026-10-09 | The term unit is stated as two chained scale multiplications, and not as a multiplier. The count of adders comes from the format, and it is 2 for UE6M2 and 4 for UE5M3. The width of T_b is 18 bits for UE6M2 and 20 bits for UE5M3. Section 5.4 gains the bound table, and the width table of section 5.7 is corrected to a count of blocks and not a contraction length. |
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
-| 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of affected sections. |
+| 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
+| 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |

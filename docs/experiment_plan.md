@@ -4,7 +4,7 @@ This is the general ladder to prove/disprove FPG4 viability.
 All experiments will be in software, Python before RTL work starts.
 
 
-|ladder|what changes|what does it answer
+|ladder|what changes|what does it answer|
 |---|---|---|
 |L0|nothing, all FP64|does the model learn at all?|
 |L1|PTQ - FP4 after training|FP4 only for inference, what do we lose from FP64|
