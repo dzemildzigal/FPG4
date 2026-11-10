@@ -282,19 +282,47 @@ Measured on layer 1 of this model, `X (2000, 784) @ W1 (784, 16)`, UE6M2, `L1c`:
 | largest `abs(C)` | 20.83 |
 | smallest nonzero term, given the format limits | 1.16e-10 (estimate: `0.25 * 2^-62` for UE6M2) |
 
-From those measurements:
+From those measurements, three questions with three answers. They are different
+questions, and the answers must not be added together.
 
-| claim | bits |
-|---|---|
-| enough to hold one term of this data at full precision | 20 |
-| enough to sum one whole reduction of this data exactly | about 35 |
-| enough for the worst case the format can produce (estimate) | ~38 |
-| built | **the rule below, which gives 32 for this model** |
+| question | answer | bits on MNIST | bits on MNIST-1D |
+|---|---|---|---|
+| A. how wide is one term, as a number? | the mantissa of `T * nA * nB`, sign included | 15 to 17 | 15 to 17 |
+| B. how wide is the sum, if every term were full size? | A plus `ceil(log2(nb))` | 21 to 23 | 21 to 23 |
+| C. how wide is one fixed-point register that drops no bit of any term? | the top of the largest term minus the finest low bit any term uses | 23 to 25 | 28 to 30 |
+| built | the rule below | **32** | **32** |
 
-**20 bits was measured as sufficient, not as required.** `l1e_sweep.py` E3-24,
-E3-20 and E3-16 all produced the same accuracy as float64, at 148.9, 103.1 and
-70.0 dB of layer-1 SQNR. Nothing below 16 was tested, so the width where it
-breaks is not known.
+**B and C differ because one binary point must also span the SCALES.** On
+MNIST-1D the largest term has its top bit at `2^5` and the smallest term has its
+low bit at `2^-24`. The register must cover 29 octaves, and only one of those
+octaves is mantissa. B does not see the scales at all, so B says 23. B is right
+about the sum of full-size terms and wrong about one register.
+
+**C is what the built accumulator is judged by, and 32 covers it.** The worst of
+the four column entries is 30 bits, on MNIST-1D with UE5M3, so the built register
+drops no bit on either dataset and keeps two bits of margin.
+
+**C is not bounded, so the margin is a bet and it is stated as one.** `P` is a
+product of two scales, so the format permits a ratio of 63.6 octaves for UE5M3 and
+127.2 octaves for UE6M2 between the largest and the smallest term. No fixed width
+holds every possible input. The guard-bit form of `spec.md` section 5.6 handled
+that by aligning a group to a reference exponent and flushing the terms that fell
+below it. A fixed binary point cannot flush, so it bets on the exponent spread of
+the data. Experiment E3 measured what the bet costs if it is wrong: 20 bits gives
+103.1 dB and 24 bits gives 148.9 dB of layer-1 SQNR, against about 20 dB of error
+in the operands.
+
+**The 20 in the rule is a bound and not the measurement.** The bound is 13 bits
+for `S` plus 8 bits for a scale significand plus a sign. The measurement is 17
+because a large `S` and a large significand never meet in the same term on this
+data. The rule keeps the bound, because it has to hold for data that has not been
+seen.
+
+Every number in the table above comes from `python/width_probe.py`, on the test set
+of each dataset, 10,000 samples for MNIST and 20,000 for MNIST-1D, 1 seed. That
+script uses integers and powers of two only, so no number in it is rounded, and it
+prints the top bit and the low bit of every case so that the subtraction can be
+checked by hand.
 
 **The width is a rule, not a number.** A constant of 32 is right for this model
 and wrong for the next one.
@@ -317,15 +345,16 @@ after the round to a byte. The `ceil(log2(nb))` is proven from the term count.
 A model with `nb = 8192` gets 40 bits, and the bias store grows with it, because
 the bias is stored at the accumulator's width.
 
-**32 bits does not hold every term exactly, and that is a measured choice.** An
-exact sum of one reduction would need the whole span, about 35 bits on this data
-and about 38 in the worst case the format can produce. The largest and the
-smallest nonzero term of layer 1 differ by a factor of 6.09e4, and the smallest of
-them needs its own 20 bits. At 32 the low bits of the smallest terms are dropped.
-Experiment E3 sizes the drop: 20 bits gives 103.1 dB and 24 bits gives 148.9 dB of
-layer-1 SQNR, against about 20 dB of error in the operands. Both are 80 dB below
-the noise floor of the format, so the drop does not reach the result. Section 5.7 of
-`spec.md` states the same rule and the same measurement.
+**What this means for the width.** An exact sum of one reduction needs the whole
+span: 25 bits on MNIST and 30 on MNIST-1D. The built 32 covers both, so on these
+two datasets the register drops no bit. That is a measurement and not a proof, and
+the guard-bit form of `spec.md` section 5.6 exists for the case where the data
+spreads wider than the bet: it aligns a group to a reference exponent and flushes
+what falls below it. Experiments E3 measured what a shortfall costs: 20 bits gives
+103.1 dB and 24 bits gives 148.9 dB of layer-1 SQNR, against about 20 dB of error
+in the operands. Both are 80 dB below the noise floor of the format, so a shortfall
+of a few bits does not reach the result. Section 5.7 of `spec.md` states the same
+rule and the same measurement.
 
 An integer adder is about 1 LUT per bit, so 40 bits costs about 40 LUT6 per lane
 against 32 LUT6 at 32 bits. An FP32 adder is about 250 to 400 LUT6, and it rounds

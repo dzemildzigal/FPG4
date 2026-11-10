@@ -1,6 +1,6 @@
 # FPG4 specification
 
-Version 0.7. Status: draft.
+Version 0.8. Status: draft.
 
 ## 1. Purpose
 
@@ -317,7 +317,7 @@ The shift by E is exact when E is zero or positive. When E is negative, the shif
 | Mantissa product P, a bound and not a register | 8 bits | 225 |
 | Scaled block value T_b | 18 bits signed (UE6M2), 20 bits signed (UE5M3) | 112,896 or 518,400 |
 | Scale exponent offset E | 7 bits signed (UE5M3), 8 bits signed (UE6M2) | -38 to 22, or -68 to 58 |
-| Layer accumulator | `20 + ceil(log2(nb))` bits, and at least the measured alignment span, rounded up to a multiple of 8 | section 5.7. 32 bits for this model |
+| Layer accumulator | `20 + ceil(log2(nb))` bits, rounded up to a multiple of 8 | section 5.7. 32 bits for this model |
 | Guard-bit budget G | 12 insurance, 16 insurance-plus. **Not used by the built datapath** | section 5.7, insurance form only |
 
 ### 5.6 Alignment
@@ -352,16 +352,14 @@ the largest term instead of above the smallest one.
 
 ### 5.7 Layer accumulator width
 
-The width satisfies two requirements and they add.
+The width answers two different questions, and the answers must not be added
+together. The first question is about the sum. The second is about the single
+binary point of the register.
 
-**Requirement 1, precision.** One block term needs 20 bits, and 20 is the width that
-experiment E3 measured as sufficient including the sign and the integer part. The
-proof agrees within one bit: the term is 12 magnitude bits of `S_b` times 8 bits of
-the significand of `P`, which is 20 bits of precision and 21 bits with a sign. The
-one bit changes nothing after the round to a byte.
-
-**Requirement 2, growth.** The sum of `nb` terms needs `ceil(log2(nb))` more bits,
-or adding could overflow.
+**Requirement 1, a sum that cannot overflow.** One term needs the width of a block
+sum times a scale significand, which is a 13-bit `S_b` times an 8-bit significand,
+20 bits of magnitude and 21 with a sign. The sum of `nb` such terms needs
+`ceil(log2(nb))` more bits, or adding could overflow. The rule uses 20 for one term.
 
     width = 20 + ceil(log2(nb))      then round up to a multiple of 8
 
@@ -374,17 +372,31 @@ or adding could overflow.
 | 1024 | 20 | 10 | 30 | 32 |
 | 8192 | 20 | 13 | 33 | 40 |
 
-**32 bits for this model.** The rule gives 26 and the round to a byte gives 32. The
-round is not decoration. It costs three bits and it holds the alignment loss below.
+**Requirement 2, one binary point that drops no bit.** The register has one binary
+point for all `nb` terms, so its top must hold the largest term and its bottom must
+sit at the finest low bit that any term uses. That width includes the spread of the
+scale products, which requirement 1 does not see at all. Measured by
+`python/width_probe.py` on the test set of each dataset, 10,000 samples for MNIST and 20,000 for MNIST-1D, 1 seed:
 
-**The accumulator does not hold every term exactly, and that is measured, not
-assumed.** The largest and the smallest nonzero term of one layer-1 reduction differ
-by a factor of 6.09e4, and the smallest term needs its own 20 bits. An exact sum of
-that reduction would need about 35 bits. The built accumulator is 32, so low bits
-of the small terms are dropped. Experiment E3 sizes that loss: 20 bits gives
-103.1 dB and 24 bits gives 148.9 dB of layer-1 signal to noise ratio, against about
-20 dB of error in the operands. The accumulator is therefore 80 dB below the noise
-of the format at 20 bits, and the drop of low bits does not reach the result.
+| dataset | format | one term | sum of full terms | one binary point | top bit | finest low bit |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| MNIST | UE6M2 | 15 | 21 | 23 | `2^2` | `2^-20` |
+| MNIST | UE5M3 | 17 | 23 | 25 | `2^2` | `2^-22` |
+| MNIST-1D | UE6M2 | 15 | 21 | 28 | `2^5` | `2^-22` |
+| MNIST-1D | UE5M3 | 17 | 23 | 30 | `2^5` | `2^-24` |
+
+**The worst entry is 30 bits and the built accumulator is 32, so on these two
+datasets the register drops no bit.** The two bits are the whole margin, and they
+are a bet on the data, because requirement 2 is not bounded. `P` is a product of two
+scales, so the format permits a ratio of 63.6 octaves for UE5M3 and 127.2 for UE6M2
+between the largest and the smallest term, and no fixed width holds every input.
+Experiment E3 measured the cost of a shortfall: 20 bits gives 103.1 dB and 24 bits
+gives 148.9 dB of layer-1 signal to noise ratio, against about 20 dB of error in the
+operands. A shortfall of a few bits therefore does not reach the result.
+
+**32 bits for this model.** The rule gives 26 and the round to a byte gives 32. The
+round is what covers requirement 2 on the measured data, and it costs three bits
+over requirement 1.
 
 The count is the number of blocks and not the contraction length, so a larger block
 size reduces the accumulator. The number of output columns does not change the
@@ -422,7 +434,7 @@ The datapath has exactly three error sources.
 | :--- | :--- | :--- | :--- |
 | Payload rounding | 20 percent above one scale unit, 33.3 percent between 0.5 and 1.0, and 100 percent below 0.25 | Every element | The dominant term. The measured whole-tensor error is 9.4 percent RMS |
 | Scale grid rounding | 5.88 percent | Every block | One error per block of 16. |
-| Alignment and flush | One low bit of the fixed point for a term that falls below it, and zero for a term that falls entirely below it | Every block pair | The measured span of the terms is 29 bits and the accumulator is 32. Experiment E3-20 reached 103.1 dB of layer-1 signal to noise ratio, which is 80 dB above the error of the operands |
+| Alignment and flush | One low bit of the fixed point for a term that falls below it, and zero for a term that falls entirely below it | Every block pair | The measured span is 25 bits on MNIST and 30 on MNIST-1D, and the accumulator is 32. Experiment E3-20 reached 103.1 dB of layer-1 signal to noise ratio, which is 80 dB above the error of the operands |
 | Top-end scale saturation | Not bounded | Every block | A fault term, not a rounding term. |
 
 The fourth line is not a rounding effect. A block whose ideal scale is above the largest scale of the format saturates, and the payload of that block saturates with it. The cost depends on the energy of the block. Experiment E3 shows a case where 2 blocks of 8192 carried 99.99 percent of the error energy.
@@ -617,4 +629,5 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
 | 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
 | 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |
+| 0.8 | 2026-11-09 | Section 5.7 now separates two requirements. Requirement 1 is the sum and it grows with `nb`. Requirement 2 is the single binary point and it grows with the spread of the scale products. Section 5.5 and section 6 follow. Every width number is replaced by the measurement in `python/width_probe.py` on the test sets: 25 bits on MNIST and 30 on MNIST-1D, against a built 32. The earlier 29-bit and 35-bit spans are withdrawn, because both added a bit width to a ratio of term magnitudes. |
 | 0.7 | 2026-11-09 | The layer accumulator is the fixed binary point of `datapath.md`. Section 5.7 is rewritten to `width = 20 + ceil(log2(nb))` rounded up to a multiple of 8, which is 32 bits for the reference model. The guard-bit form stays as the insurance bound and is no longer the design, so sections 5.6, 6, 10 and 11 are rewritten to match. Section 5.8 is added, for the bias at the accumulator width. Section 9 states that the encoder is not designed, and removes the encoder counts that came from `rtl-plan.md`. `results-e8.md` is restored to the repository. The two naming series of section 10 are distinguished. |
