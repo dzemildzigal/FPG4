@@ -1,6 +1,6 @@
 # FPG4 specification
 
-Version 0.6. Status: draft.
+Version 0.7. Status: draft.
 
 ## 1. Purpose
 
@@ -13,25 +13,30 @@ In this doc we define:
 4. The reference model and the experiments that gate the hardware work.
 
 
-### Cross-references
-
-This document refers to sections of four documents that are not in this repository:
-`docs/motivation.md`, `docs/rtl-plan.md`, `docs/results-e1-e3.md` and
-`docs/results-e8.md`. They are in `FPG4-archive-2026-10-18/docs/`.
-
-Two of those references carry open work. Section 5.6 and section 5.7 describe the
-alignment form and the accumulator width of `rtl-plan.md`. That form is not yet
-reconciled with the measured accumulator width of `datapath.md`, which is
-`20 + ceil(log2(nb))` bits rounded to a byte, against the `T_bits + G + ceil(log2
-n)` form below. Section 9 takes the encoder counts and the look-up-table share
-from `rtl-plan.md`, and the encoder is not designed yet.
-
 ### 1.1 Decision status
 
 The scale configuration is not decided (UE6M2 vs UE5M3). 
 The reason for the open decision is that we still haven't identified an experiment that would clearly mark one better than the other. 
 
 The scale selection rule is not decided either (`four6` vs `amax6`). The two rules are within the seed noise of each other on two datasets, and the encoder area cost of `four6` is not measured yet. No default is taken.
+
+### 1.2 Cross-references
+
+`docs/results-e8.md` is in this repository.
+
+Three documents that this document refers to are **not** in this repository. They
+are in `FPG4-archive-2026-10-18/docs/`, and they stay there because each one states
+a rule that this revision no longer uses. None of them is edited, and none is
+quoted here as current.
+
+| document | what it states that is no longer current |
+| :--- | :--- |
+| `motivation.md` | the window as 9.91 and 19.21 decades, which the amendment of 2026-10-18 changed to 9.58 and 19.14, and a 38-bit accumulator as the design |
+| `rtl-plan.md` | the reference-exponent and guard-bit form as the design, with a 38-bit accumulator, and an encoder cost. Section 5.6 of this document keeps that form as the insurance bound only, and section 9 states no encoder cost |
+| `results-e1-e3.md` | tables with the pre-amendment window, and columns for the subnormal band and the scale repair, which no longer exist |
+
+Where this document cites a number from one of those three, the number is stated
+here as well, so the citation is a pointer and not the only source.
 
 ## 2. Terms
 
@@ -41,8 +46,9 @@ The scale selection rule is not decided either (`four6` vs `amax6`). The two rul
 - A **block** is a group of 16 consecutive payload values along the contraction dimension K.
 - A **block scale** is the single 8-bit scaling factor that applies to one block.
 - A **contraction dimension** is the dimension that the dot product sums over.
-- A **guard bit** is an extra low-order bit.
+- A **guard bit** is an extra low-order bit that keeps a small term alive when the accumulator aligns to a large one. The built datapath does not use guard bits, and section 5.6 keeps them for the insurance form only.
 - A **flush** is the replacement of a value by zero when the value is too small to align.
+- A **layer accumulator** is the fixed-point sum of the block terms of one output element. Its width is set by section 5.7.
 
 ## 3. Prior art and the position of this work
 
@@ -295,7 +301,7 @@ The product S_b * P is exact. The tight bound on T_b depends on the format, beca
 | UE5M3 | 15 | 2304 * 225 = 518,400 | 20 bits |
 | UE6M2 | 7 | 2304 * 49 = 112,896 | 18 bits |
 
-The result is exact at either width. UE6M2 needs two bits fewer, and section 5.7 carries that saving into the group accumulator.
+The result is exact at either width. UE6M2 needs two bits fewer, and section 5.7 carries that saving into the layer accumulator.
 
 The term T_b is built from conditional adds of shifted copies of S_b, and not from a multiplier resource. The unit multiplies by N_w and then by N_x, so it holds two chained constants instead of one product table. The number of conditional adders is the canonical signed-digit count of each constant. N is at most 15, so the count is at most 2 for each stage. UE5M3 needs 4 adders and UE6M2 needs 2. A single-stage form with P as the constant would need 4 adders and 32 look-up tables for UE5M3, and 3 adders and 32 look-up tables for UE6M2, because P reaches 225. Section 9 gives the structure and the size.
 
@@ -311,32 +317,100 @@ The shift by E is exact when E is zero or positive. When E is negative, the shif
 | Mantissa product P, a bound and not a register | 8 bits | 225 |
 | Scaled block value T_b | 18 bits signed (UE6M2), 20 bits signed (UE5M3) | 112,896 or 518,400 |
 | Scale exponent offset E | 7 bits signed (UE5M3), 8 bits signed (UE6M2) | -38 to 22, or -68 to 58 |
-| Group accumulator | T_bits + G + ceil(log2 n) bits | section 5.7 |
-| Guard-bit budget G | 12 standard, 16 insurance | decided by E5 |
+| Layer accumulator | `20 + ceil(log2(nb))` bits, and at least the measured alignment span, rounded up to a multiple of 8 | section 5.7. 32 bits for this model |
+| Guard-bit budget G | 12 insurance, 16 insurance-plus. **Not used by the built datapath** | section 5.7, insurance form only |
 
 ### 5.6 Alignment
 
-The group accumulator sums the block contributions. The block with the largest E sets the reference exponent. Every other block aligns to that reference.
+The layer accumulator sums the block contributions, and the contributions have
+different exponents. They must be brought to one binary point before they add.
+There are two ways to choose that point.
 
-The reference exponent of a group comes from a pre-scan of the block scale codes of that group. The pre-scan makes the alignment static, so the datapath holds no variable shifter in the accumulator path. Section 3 of `docs/rtl-plan.md` states the reason, the cost, and the alternative.
+**The built form: a fixed binary point.** The point is set at build time by the
+width rule of section 5.7. Applying the exponent E is one shift into that point.
+There is no reference exponent and no pre-scan. The loss is that a term whose
+exponent is far below the largest term of the same reduction loses low bits, and
+a term that falls entirely below the point adds zero.
 
-When a block needs a right shift of more than G bits, the datapath flushes the block to zero and sets a sticky bit. The guard-bit budget G sets the smallest term that survives.
+**The insurance form: a reference exponent from a pre-scan.** The block with the
+largest E in the group sets the reference, every other block aligns to it, and a
+guard budget G keeps the small terms alive. When a block needs a right shift of
+more than G bits the datapath flushes it to zero and sets a sticky bit. This is
+what section 3 of `docs/rtl-plan.md` describes, and what experiments E5 and E8
+measured. It is **not** the datapath that is built, because the fixed point meets
+the requirement on the measured tensors and it costs no pre-scan.
 
-The guard-bit budget is G = 12 for the standard configuration and G = 16 for the insurance configuration. Experiment E5 decides this. The measured spread of the block exponents inside one group is one octave at the median and five octaves in the worst real case, so G = 12 is far above the requirement. The hard synthetic case with a 12-decade range needs G = 10 for an aggregate cost below 0.05 dB, and its error tail falls below 0.03 percent of the RMS at G = 16. Section 5.7 gives the accumulator width.
+The evidence for the insurance form is kept because it sets the bound. The
+measured spread of the block exponents inside one group is one octave at the
+median and five octaves in the worst real case, so G = 12 is far above the
+requirement. The hard synthetic case with a 12-decade range needs G = 10 for an
+aggregate cost below 0.05 dB, and its error tail falls below 0.03 percent of the
+RMS at G = 16. Measurement E5 shows that G = 0 cuts the signal to noise ratio of a
+real matrix product from 18.02 dB to 3.71 dB, which is why the guard budget exists
+in that form. The fixed-point form does not need G, because the point sits below
+the largest term instead of above the smallest one.
 
-Guard bits are not an optimization. Measurement E5 shows that G = 0 cuts the signal to noise ratio of a real matrix product from 18.02 dB to 3.71 dB.
+### 5.7 Layer accumulator width
 
-### 5.7 Group accumulator width
+The width satisfies two requirements and they add.
 
-The aligned term is below 2 ** (T_bits + G - 1), and the sum of n blocks is below n times that value.
+**Requirement 1, precision.** One block term needs 20 bits, and 20 is the width that
+experiment E3 measured as sufficient including the sign and the integer part. The
+proof agrees within one bit: the term is 12 magnitude bits of `S_b` times 8 bits of
+the significand of `P`, which is 20 bits of precision and 21 bits with a sign. The
+one bit changes nothing after the round to a byte.
 
-    width = T_bits + G + ceil(log2(n))
+**Requirement 2, growth.** The sum of `nb` terms needs `ceil(log2(nb))` more bits,
+or adding could overflow.
 
-T_bits is 20 for UE5M3 and 18 for UE6M2. The width of T_b comes from section 5.4.
+    width = 20 + ceil(log2(nb))      then round up to a multiple of 8
 
-At G = 12 the UE5M3 width is 35 bits for a contraction of 128, which is 8 blocks, 38 bits for 1024, which is 64 blocks, and 40 bits for 4096, which is 256 blocks. UE6M2 needs two bits fewer in every case. The count is the number of blocks and not the contraction length, so a larger block size reduces the accumulator.
+| `nb` | requirement 1 | growth | sum | width |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 20 | 0 | 20 | 24 |
+| 8 | 20 | 3 | 23 | 24 |
+| 49 | 20 | 6 | 26 | 32 |
+| 256 | 20 | 8 | 28 | 32 |
+| 1024 | 20 | 10 | 30 | 32 |
+| 8192 | 20 | 13 | 33 | 40 |
 
-The bound is a proof and not a tight fit. The measured use of the accumulator is below 1 percent on the real matrix products, and below 0.2 percent on the long synthetic contractions. The designer can size to the bound and hold the proof, or size to the measurement and count the overflow events.
+**32 bits for this model.** The rule gives 26 and the round to a byte gives 32. The
+round is not decoration. It costs three bits and it holds the alignment loss below.
+
+**The accumulator does not hold every term exactly, and that is measured, not
+assumed.** The largest and the smallest nonzero term of one layer-1 reduction differ
+by a factor of 6.09e4, and the smallest term needs its own 20 bits. An exact sum of
+that reduction would need about 35 bits. The built accumulator is 32, so low bits
+of the small terms are dropped. Experiment E3 sizes that loss: 20 bits gives
+103.1 dB and 24 bits gives 148.9 dB of layer-1 signal to noise ratio, against about
+20 dB of error in the operands. The accumulator is therefore 80 dB below the noise
+of the format at 20 bits, and the drop of low bits does not reach the result.
+
+The count is the number of blocks and not the contraction length, so a larger block
+size reduces the accumulator. The number of output columns does not change the
+width. It changes the number of accumulator registers: one per output column,
+reused `nb` times each.
+
+The earlier form of this section was `T_bits + G + ceil(log2 n)`, with T_bits of 20
+for UE5M3 and 18 for UE6M2 and G = 12, which gives 35 to 40 bits. That form keeps
+the point movable and buys the small terms back with guard bits. It is kept as the
+insurance bound, it is provable without measuring the data, and it costs 6 bits
+more than the built form on this model.
+
+### 5.8 The bias
+
+The bias enters no multiply, so it has no block and no scale. It is one signed
+fixed-point constant per bias value, at the binary point of the layer accumulator,
+and it is **loaded as the accumulator's initial value** before the first term.
+There is no decoder and no adder.
+
+Its width is the accumulator width of section 5.7, because it is the initial value
+of that register. It is 32 bits for this model, which is 1,344 bits for the 42 bias
+values against a weight store of 58,509 bits, that is 1.4 percent.
+
+An FP4 bias store was measured and rejected. One shared scale per layer loses up
+to 1.14 points of accuracy, and one scale per value costs 42 extra scale constants
+for at most 0.10 points. The measurements are in section 4.6 of `datapath.md`.
 
 ## 6. Error budget
 
@@ -346,7 +420,7 @@ The datapath has exactly three error sources.
 | :--- | :--- | :--- | :--- |
 | Payload rounding | 20 percent above one scale unit, 33.3 percent between 0.5 and 1.0, and 100 percent below 0.25 | Every element | The dominant term. The measured whole-tensor error is 9.4 percent RMS |
 | Scale grid rounding | 5.88 percent | Every block | One error per block of 16. |
-| Alignment and flush | Controlled by G | Every block pair | Below 0.05 dB at G = 12 on every case, and zero on the real data at G = 6 |
+| Alignment and flush | One low bit of the fixed point for a term that falls below it, and zero for a term that falls entirely below it | Every block pair | The measured span of the terms is 29 bits and the accumulator is 32. Experiment E3-20 reached 103.1 dB of layer-1 signal to noise ratio, which is 80 dB above the error of the operands |
 | Top-end scale saturation | Not bounded | Every block | A fault term, not a rounding term. |
 
 The fourth line is not a rounding effect. A block whose ideal scale is above the largest scale of the format saturates, and the payload of that block saturates with it. The cost depends on the energy of the block. Experiment E3 shows a case where 2 blocks of 8192 carried 99.99 percent of the error energy.
@@ -412,7 +486,7 @@ The build plan is `docs/rtl-plan.md`. It holds the architecture, the module list
 | DDR3 | 16-bit at 1050 Mbps, about 2.1 GB/s peak | Board |
 | PS | 2 Cortex-A9 at 650 MHz | Board |
 
-The processing element contains one 64 by 8 product read-only memory, one 13-bit block accumulator, and one boundary unit. The boundary unit contains the table that decodes the N field of each operand, the term unit of section 5.4, the alignment unit, and the group accumulator of section 5.7. The boundary unit holds no product table.
+The processing element contains one 64 by 8 product read-only memory, one 13-bit block accumulator, and one boundary unit. The boundary unit contains the table that decodes the N field of each operand, the term unit of section 5.4, the shifter that applies the exponent E, and the layer accumulator of section 5.7. The boundary unit holds no product table.
 
 The table that decodes the N field is a function of the mantissa field alone, so it holds 8 entries of 4 bits for UE5M3 and 8 entries of 4 bits for UE6M2. One 6-input look-up table holds a 64 by 1 read-only memory, so the whole table fits in one look-up table. Section 5 defines the table, and the count comes from the width of the mantissa field and not from synthesis.
 
@@ -452,13 +526,37 @@ A variant with the term multiply on a DSP48E1 exists for one purpose only. It me
 
 The scale configuration is three parameters: the exponent bits, the mantissa bits, and the bias. A configuration change touches the decode and the constants only. The payload quantizer, the integer multiply, the shifter, the accumulator, and the two conditional-add stages are common to every configuration, because each stage takes one N field as its constant. The size of the change is a synthesis question, and it belongs to experiment E9. The change costs no extra element storage.
 
-The block scale encoder is a separate item of the area and timing budget. It contains a block buffer of 16 payload codes for each input lane, a maximum tree, the scale encoder, the payload quantizer, and the error accumulator that the rule `four6` needs. Experiment E9 measures its area and its effect on the clock.
+**The block scale encoder is not designed yet.** It is the one stage of the
+pipeline with no circuit behind it, so this document states no area for it and no
+count of encoders. The target is **8 cycles or fewer per block of 16 values**,
+which keeps it level with a 4-lane MAC array. Section 4 of `engine.md` holds its
+row in the cost scoreboard. Experiment E9 measures its area and its effect on the
+clock, for the rules `amax6` and `four6`.
 
-The count of encoders is not one, and the count does not follow from the number of blocks. The boundary unit of the datapath runs once for each block, so several lanes share it by round-robin. The payload quantizer of the encoder runs once for each element, so it cannot use that lever. One encoder supplies 8 elements in a cycle with the rule `four6`, and 16 with the rule `amax6`. An array of R rows and C columns needs R/8 encoders for one operand and C/8 for the other, and the rule `amax6` halves both counts. For an array that fills the device, the encoders take about 10 percent of the look-up tables. Section 7.1 of `docs/rtl-plan.md` holds the table, the two bounds, and the case that fails. A stream from DDR supplies about 5 elements in a cycle for both operands together, so a design with a DDR feed needs one encoder for each operand. A stream that already arrives in FPG4 needs no encoder at all.
+What is known about the encoder is the parts it must contain. A maximum tree over
+the 16 values. A scale encoder that turns `amax` into an 8-bit code. Sixteen payload
+quantisers. A pack of 16 payload codes and one scale code into 72 bits. And, for
+the rule `four6`, an error accumulator and a second pass.
 
-The buffer is a property of block scaling. Experiment E8 measured the cost of removing it. A delayed encoder uses the statistics of the previous block, and it costs 7.48 dB on the real tensors and 30.39 dB on a 12-decade stress case. The buffer costs about 4 look-up tables for each lane, because a 16-deep shift register fits in one LUT6 as an SRL. The buffer stays in the design. Section 8 of `docs/results-e8.md` records the measurement.
+**The encoder must buffer one whole block, and the buffer holds the raw values, not
+the payload codes.** `amax` must see all 16 values before any of them can be
+encoded, because the scale comes from their maximum. So 16 values at the width of
+the input is **512 flip-flops** per block, and it cannot be a shift register of
+4-bit codes. The earlier version of this section said the buffer holds payload
+codes and costs about 4 look-up tables per lane. That is wrong, because the payload
+codes do not exist until after the maximum is known.
 
-The rule `four6` doubles the arithmetic of the encoder, so it is a separate configuration with its own cost. The second pass of the rule stays as well. Measurement E8 shows that the choice of the rule changes on 38 to 55 percent of neighbouring blocks, so the choice cannot be made one block ahead.
+The buffer is a property of block scaling, and it stays. Experiment E8 measured the
+cost of removing it. A delayed encoder uses the statistics of the previous block,
+and it costs 7.48 dB on the real tensors and 30.39 dB on a 12-decade stress case.
+Section 8 of `docs/results-e8.md` records the measurement.
+
+The rule `four6` doubles the arithmetic of the encoder, because the second pass
+needs a second scale encode, a second payload pass, 16 subtractions, 16 absolute
+values, and a compare. Measurement E8 shows that the choice of the rule changes on
+38 to 55 percent of neighbouring blocks, so the choice cannot be made one block
+ahead. The encoder therefore carries the cost of the rule that is chosen, and
+`four6` is close to twice the area and twice the cycles of `amax6`.
 
 The three variants to compare are:
 
@@ -470,13 +568,15 @@ The three variants to compare are:
 
 Each experiment has a deliverable and a gate. A gate is the hardware decision that depends on the result.
 
+**Two naming series are in use, and they are different plans.** The **E series** below is the format, error and synthesis plan of this document. The **L series** in `experiment_plan.md` is the numerical ladder, L0 to L8, which measures what the format costs in accuracy on MNIST and MNIST-1D. The only name they share is `E9`, which is synthesis in both. Read "rung E9" as this table's E9.
+
 | ID | Experiment | Deliverable | Gate |
 | :--- | :--- | :--- | :--- |
 | E1 | Range audit over weights, activations, dY, dW and dX for a full training run. | Saturation rate and the required exponent window for each tensor class. | The bias choice for the scale, the alignment width, and the validity of section 4.6. |
 | E2 | Scale-rule sweep at B = 16. Rules: four6, the second largest value, the 75th percentile, the lowest block error, and the oracle. | Error per rule, the dead zone, and the worst-block error. | The specification of the scale unit. Done on 2026-10-07. The rule is `four6`. |
 | E3 | Scale-format threat test at B = 16. Formats: E8M0, UE6M2, UE5M3, E4M3 with and without a tensor reference. | One error number and one table per format. | Whether the paper can defend the fraction bits in the scale. |
 | E4 | Reference-model conformance. | A pass or fail record against section 8. | The authority for all RTL comparison. |
-| E5 | Error attribution between payload, scale, and alignment. | The split of the total error. | The guard-bit budget G and the accumulator width. Done 2026-10-09. G = 12, and the accumulator is T_bits + G + ceil(log2 n) bits, with T_bits of 20 for UE5M3 and 18 for UE6M2. |
+| E5 | Error attribution between payload, scale, and alignment. | The split of the total error. | The guard-bit budget G, or the fixed binary point of section 5.7. Done 2026-10-09 for the guard-bit form: G = 12 and `T_bits + G + ceil(log2 n)` bits. The built datapath uses the fixed point instead, because it meets the requirement on the measured tensors, and experiment E3 sized the loss: 20 bits gives 103.1 dB of layer-1 signal to noise ratio and 24 bits gives 148.9 dB |
 | E6 | Backward signal under stochastic rounding. | The cosine between the quantized update and the float32 update, and the rate of zero updates. | Whether the hardware needs a random-number source. |
 | E7 | End-to-end training of a small model against FP32, BF16, FP16, FP8, MXFP4, and NVFP4. | Loss, and tokens to reach a loss target. | The acceptance criteria for the board demonstration. |
 | E8 | Delayed scaling. The encoder uses the statistics of the previous block. | Error and the area saved by the removal of the buffer. | Whether the array needs a block buffer at all. Done 2026-10-09. The delay costs 7.48 dB on the real tensors and 30.39 dB on a stress case. The buffer stays. |
@@ -489,14 +589,14 @@ E1, E3 and E4 come first. Each one costs less than one day of work and each one 
 0. The structure of the term unit. Decided 2026-10-09. The term unit multiplies by N_w and then by N_x, so `T = (S * N_w) * N_x`. It holds no product table. A ruling was needed because section 5.3 and section 9 of an earlier revision described a 256 by 8 read-only memory for `P = N_w * N_x` and a single stage `T = S * P`, while section 5.4 and `rtl-plan.md` section 3.1 described the two-stage form. The two-stage form is never worse and it is better for UE6M2, and it needs no read-only memory. The computed costs are 4 conditional adders and 0 look-up tables for UE5M3, and 2 adders and 0 look-up tables for UE6M2. The single-stage form is 4 adders and 32 look-up tables for UE5M3, because P reaches 225, and 3 adders and 32 look-up tables for UE6M2. The ruling is recorded in `learn-fpg4/REVIEW.md` item F1.
 1. The bias choice for the scale. The default is 15, which matches the published work. E1 decides. E3 shows that the top of the range is the dangerous end, because the largest values carry the energy.
 2. The scale-selection rule. Decided by E2. The rule is `four6`, which tests the two candidate scales amax/6 and amax/4 and keeps the better one. It gains 0.17 to 2.64 dB against the largest-value rule. Clipping the top of the block is rejected. The test that chooses between the two candidates is the absolute error of the block, not the squared error, and not a saturation test. The absolute error needs no multiplier, and it loses only 0.14 dB against the squared error. The rule doubles the work of the encoder. The area and the clock effect of that doubling are open, and they come from synthesis in experiment E9. If the encoder does not close timing, the fallback is the rule `amax6`, which costs 0.70 dB on the real tensors. The measured values on the real tensors are 21.27 dB for `four6` and 20.57 dB for `amax6`, both from measurement E2 in this project.
-3. The guard-bit budget G. Decided by E5. The value is 12 for the standard configuration and 16 for the insurance configuration. The measured spread of the block exponents inside one group is one octave at the median and five octaves in the worst real case, so the measured requirement is 4 to 6. The accumulator width is T_bits + G + ceil(log2 n) bits, with T_bits of 20 for UE5M3 and 18 for UE6M2.
+3. The guard-bit budget G. Decided by E5 for the guard-bit form, and superseded for the built datapath. The value is 12 for the standard configuration and 16 for the insurance configuration. The measured spread of the block exponents inside one group is one octave at the median and five octaves in the worst real case, so the measured requirement is 4 to 6. The built datapath uses the fixed binary point of section 5.7 instead: `width = 20 + ceil(log2(nb))` rounded up to a multiple of 8, which is 32 bits for this model. The guard-bit form stays as the insurance bound at 35 to 40 bits.
 4. Stochastic rounding for dY. The default is off. E6 decides.
 5. The tensor reference. The default is none. E1 decides.
 6. The scale configuration. This decision is open until E7. Two positions are defensible, and the hardware supports both. The hardware cost is not the same for the two, and the measurements of this revision change the balance.
 
-   Position A, UE5M3 with bias 15. It is the more accurate configuration. It costs 0.17 dB against the payload floor on the real tensors, and it matches the NVFP4 surrogate. The measured spread of block maxima in the audited run is 4.5 decades, and the window holds 9.91 decades. Its hardware is the larger of the two: the term unit holds 4 adders, T_b is 20 bits, and the group accumulator is 2 bits wider.
+   Position A, UE5M3 with bias 15. It is the more accurate configuration. It costs 0.17 dB against the payload floor on the real tensors, and it matches the NVFP4 surrogate. The measured spread of block maxima in the audited run is 4.5 decades, and the window holds 9.58 decades. Its hardware is the larger of the two: the term unit holds 4 adders, and the N field is one bit wider.
 
-   Position B, UE6M2 with bias 31. It is the safer configuration. It costs 0.38 dB against the payload floor on the real tensors, which is 0.21 dB more than position A. In exchange it holds 19.21 decades, so a tensor with a very wide dynamic range cannot push a block maximum above the window. Measurement E3 shows that such a tensor costs UE5M3 a factor of 100 in error power, and costs UE6M2 nothing. Its hardware is the smaller of the two: the term unit holds 2 adders, T_b is 18 bits, and the group accumulator is 2 bits narrower. It needs one bit more for the exponent offset E, which the alignment shifter uses and the accumulator does not.
+   Position B, UE6M2 with bias 31. It is the safer configuration. It costs 0.38 dB against the payload floor on the real tensors, which is 0.21 dB more than position A. In exchange it holds 19.14 decades, so a tensor with a very wide dynamic range cannot push a block maximum above the window. Measurement E3 shows that such a tensor costs UE5M3 a factor of 100 in error power, and costs UE6M2 nothing. Its hardware is the smaller of the two: the term unit holds 2 adders, and the N field is one bit narrower. It needs one bit more for the exponent offset E, which the shifter uses and the accumulator does not.
 
    The stated reason for the open decision is the risk of a single very large activation value. That risk is not present in the audited run, and no small model will produce it. Section 1.1 records the status. The counts above come from the format, and experiment E9 measures the two builds.
 ## 12. Out of scope
@@ -515,3 +615,4 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
 | 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
 | 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |
+| 0.7 | 2026-11-09 | The layer accumulator is the fixed binary point of `datapath.md`. Section 5.7 is rewritten to `width = 20 + ceil(log2(nb))` rounded up to a multiple of 8, which is 32 bits for the reference model. The guard-bit form stays as the insurance bound and is no longer the design, so sections 5.6, 6, 10 and 11 are rewritten to match. Section 5.8 is added, for the bias at the accumulator width. Section 9 states that the encoder is not designed, and removes the encoder counts that came from `rtl-plan.md`. `results-e8.md` is restored to the repository. The two naming series of section 10 are distinguished. |
