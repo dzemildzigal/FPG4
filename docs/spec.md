@@ -1,6 +1,6 @@
 # FPG4 specification
 
-Version 0.10. Status: draft.
+Version 0.11. Status: draft.
 
 ## 1. Purpose
 
@@ -326,39 +326,34 @@ The layer accumulator sums the block contributions, and the contributions have
 different exponents. They must be brought to one binary point before they add.
 There are two ways to choose that point.
 
-**The built form: a fixed binary point.** The point has two properties and both must
-be stated. The **width** is 32 bits, from section 5.7. The **position** is the
-position of the low bit, named `F`, and it is a constant for each layer, set at build
-time:
+**The built form: a fixed binary point. TWO THINGS ARE NOT DECIDED.**
 
-    F = ceil(log2(max absolute value of C of that layer)) - 31
+1. **The numeric format of the accumulator is not decided.** Fixed point and floating
+point are both open. No measurement separates them yet.
+2. **If it is fixed point, the position of the point is not decided.** No value of
+   `F` is assumed anywhere in this document, and no section may use one.
 
-`F` is the only property that decides which numbers a 32-bit register can hold. 32
-bits with `F = -26` holds `2^-26` to `2^5`. 32 bits with `F = 18` holds `2^18` to
-`2^49`. Both are "32 bits". Before this revision no document stated `F`, and that
-was a defect.
+Earlier revisions of this section stated `F = ceil(log2(max absolute C)) - 31` as a
+rule. **That was not a decided rule.** It was a number chosen inside one script so
+that an experiment could run, and it was written here as if the decision had been
+made. It is withdrawn. The decision is open, and section 11 records it.
 
-Measured on the test sets, 10,000 samples, rule `L1c`, UE5M3:
+What the datapath does require, whichever way the decision goes, is that every term of
+one reduction reaches one common point before the add. That is arithmetic and not a
+choice: terms arrive at different exponents, and a sum needs one scale.
 
-| dataset | layer | max absolute `C` | top bit | `F` | span | bits lost at 32 |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| MNIST | 1 | 22.70 | `2^5` | -26 | 25 | 0 |
-| MNIST | 2 | 33.95 | `2^6` | -25 | 19 | 0 |
-| MNIST | 3 | 28.00 | `2^5` | -26 | 16 | 0 |
-| MNIST-1D | 1 | 93.99 | `2^7` | -24 | 30 | 0 |
-| MNIST-1D | 2 | 139.22 | `2^8` | -23 | 20 | 0 |
-| MNIST-1D | 3 | 143.00 | `2^8` | -23 | 19 | 0 |
+Measured, as data and not as a decision. These are the largest sums of each layer on
+the test sets, 10,000 samples, rule `L1c`, UE5M3, with the top bit and the span that
+any candidate width would have to cover:
 
-A layer that must serve any dataset takes the worst row of its own column: layer 1
-gets `F = -24`, layer 2 gets `F = -23`, layer 3 gets `F = -23`.
-
-**Every octave of headroom is paid in bits of the smallest term.** If `F` moves down
-one octave so that an output twice as large still fits, every term one octave below
-the new point loses one more bit. That is the only trade available at a fixed width,
-and it is where the real design decision sits.
-
-**The cost in hardware is zero.** `F` enters the alignment as the shift amount
-`E - F`, so it is a constant subtracted from the exponent. It changes no logic.
+| dataset | layer | max absolute `C` | top bit | span |
+| :--- | ---: | ---: | ---: | ---: |
+| MNIST | 1 | 22.70 | `2^5` | 25 |
+| MNIST | 2 | 33.95 | `2^6` | 19 |
+| MNIST | 3 | 28.00 | `2^5` | 16 |
+| MNIST-1D | 1 | 93.99 | `2^7` | 30 |
+| MNIST-1D | 2 | 139.22 | `2^8` | 20 |
+| MNIST-1D | 3 | 143.00 | `2^8` | 19 |
 
 **Applying the exponent E is one shift into that point.** There is no reference
 exponent and no pre-scan. The loss is that a term whose exponent is far below the
@@ -676,6 +671,7 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
 | 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
 | 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |
+| 0.11 | 2026-11-09 | Section 5.6 is corrected. Revision 0.10 stated a rule `F = ceil(log2(max absolute C)) - 31` for the position of the binary point and treated it as decided. It was never decided. The value came from a script written to run an experiment. The section now records two open decisions: the numeric format of the accumulator, and the position of the point if it is fixed point. The measurements stay as data. |
 | 0.10 | 2026-11-09 | The position of the binary point of the accumulator is now stated for the first time, as a per-layer constant `F = ceil(log2(max absolute C)) - 31`, with the measured `F` of all six layer and dataset pairs. Section 5.6 also states that overflow behaviour is not defined and is an open decision. |
 | 0.9 | 2026-11-09 | Section 5.7 and `datapath.md` section 4.5 now state the exact condition under which a legal tensor defeats 32 bits, and the measurement that shows the failure is self-limiting: a span of 40 gives 191.2 dB and a span of 51 gives 230.1 dB. `python/width_probe.py` builds both. |
 | 0.8 | 2026-11-09 | Section 5.7 now separates two requirements. Requirement 1 is the sum and it grows with `nb`. Requirement 2 is the single binary point and it grows with the spread of the scale products. Section 5.5 and section 6 follow. Every width number is replaced by the measurement in `python/width_probe.py` on the test sets: 25 bits on MNIST and 30 on MNIST-1D, against a built 32. The earlier 29-bit and 35-bit spans are withdrawn, because both added a bit width to a ratio of term magnitudes. |

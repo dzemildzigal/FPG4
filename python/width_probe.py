@@ -159,14 +159,23 @@ def exceed(name, W, X):
     nz = mant != 0
     bits = np.zeros_like(mant)
     bits[nz] = np.floor(np.log2(np.abs(mant[nz]))).astype(np.int64) + 1
-    top, low = int((bits + expo)[nz].max()), int(expo[nz].min())
-    span = top - low + 1
+    top_term = int((bits + expo)[nz].max())
+    low = int(expo[nz].min())
+    span = top_term - low + 1
 
     term = np.ldexp(mant.astype(np.float64), expo)
     exact = term.sum(axis=2)
-    print("  %-46s span %2d  %s 32" % (name, span, "OVER" if span > 32 else "under"))
+    # ASSUMED VALUE, NOT A DESIGN DECISION. The accumulator's numeric format is not
+    # decided and neither is the position of its point. This experiment needs some
+    # point to produce a number, so it takes the finest point that cannot overflow the
+    # largest sum: F = top(sum) - (W - 1). That is a placeholder. Every number below
+    # depends on it, so the script prints it on every line.
+    top_sum = int(np.ceil(np.log2(np.abs(exact).max())))
+    print("  NOTE: F below is an assumed placeholder, not a decided design value.")
+    print("  %-40s span %2d  top(term) 2^%d  top(sum) 2^%d  %s 32"
+          % (name, span, top_term, top_sum, "OVER" if span > 32 else "under"))
     for Wb in (32, 40):
-        F = top - (Wb - 1)
+        F = top_sum - (Wb - 1)
         grid = 2.0 ** F
         acc = (np.round(term / grid) * grid).sum(axis=2)
         err = acc - exact

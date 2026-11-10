@@ -262,32 +262,37 @@ The layer accumulator is in the format of two's complement **fixed point**.
 One binary point per layer, or, one binary point for all layers (max needed bits reproduced for every layer acc).
 This is chosen at build time (when you set the architecture).
 
-**The position of that point is `F`, and it was never written down before now.** A
-width alone does not define a fixed-point number. 32 bits with its low bit at `2^-26`
-holds `2^-26` to `2^5`. The same 32 bits with its low bit at `2^18` holds `2^18` to
-`2^49`. Those are different registers with the same width. The rule is:
+**THE POSITION OF THAT POINT IS NOT SET. THIS IS AN OPEN DECISION.**
 
-    F = ceil(log2(max absolute value of C of that layer)) - 31
+The numeric format of the accumulator is open as well. Fixed point and floating point
+are both on the table, and no measurement separates them yet. So this section does not
+state `F` and no formula in this document produces one.
 
-`F` is the largest position that still leaves the top of the register above the
-largest sum, so it is the finest point that cannot overflow. The measured values, from
-`python/width_probe.py`-style integer arithmetic on the test sets, rule `L1c`, UE5M3:
+A previous revision of this section stated `F = ceil(log2(max absolute C of that
+layer)) - 31` and presented it as the rule. **It was never a decided rule.** It came
+from a script that needed a value of `F` to produce a number, and it was written here
+as though the decision had been taken. It is withdrawn.
 
-| dataset | layer | max absolute `C` | top bit | `F` | span | bits lost at 32 |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| MNIST | 1 | 22.70 | `2^5` | -26 | 25 | 0 |
-| MNIST | 2 | 33.95 | `2^6` | -25 | 19 | 0 |
-| MNIST | 3 | 28.00 | `2^5` | -26 | 16 | 0 |
-| MNIST-1D | 1 | 93.99 | `2^7` | -24 | 30 | 0 |
-| MNIST-1D | 2 | 139.22 | `2^8` | -23 | 20 | 0 |
-| MNIST-1D | 3 | 143.00 | `2^8` | -23 | 19 | 0 |
+What is not open is smaller than it looks. Every term of one reduction must arrive at
+one common point before the add, because the terms arrive at different exponents and a
+sum has one scale. That much is arithmetic. Everything after it, which format, which
+position, whether the point moves per layer, and what happens on overflow, is undecided.
 
-**Two consequences.** First, `F` differs per layer, so the constant is per layer unless
-one value is forced to serve all three, and then it must be the most negative of them,
-which costs the other layers headroom they do not need. Second, `F` is a bet on how
-large the output of that layer can get. Each octave of headroom costs one bit from the
-smallest term. The hardware cost of `F` is zero, because it enters the alignment as the
-shift amount `E - F`, and a constant shift amount is a constant in a subtract.
+The data that any decision will have to fit, measured on the test sets, 10,000 samples,
+rule `L1c`, UE5M3:
+
+| dataset | layer | max absolute `C` | top bit | span |
+| :--- | ---: | ---: | ---: | ---: |
+| MNIST | 1 | 22.70 | `2^5` | 25 |
+| MNIST | 2 | 33.95 | `2^6` | 19 |
+| MNIST | 3 | 28.00 | `2^5` | 16 |
+| MNIST-1D | 1 | 93.99 | `2^7` | 30 |
+| MNIST-1D | 2 | 139.22 | `2^8` | 20 |
+| MNIST-1D | 3 | 143.00 | `2^8` | 19 |
+
+**Overflow behaviour is not defined either.** Whatever format is chosen, the register
+has a largest value, and no document states whether it wraps or saturates when a sample
+reaches it. Saturate and count is the recommendation and not a decision.
 
 **What happens when the bet is lost is not defined.** A register at `F` overflows at
 `2^(F+31)`. This document does not say whether the accumulator wraps or saturates.
