@@ -261,6 +261,38 @@ multiply. Keep it separate from `P` so `P` stays a clean scale product.
 The layer accumulator is in the format of two's complement **fixed point**. 
 One binary point per layer, or, one binary point for all layers (max needed bits reproduced for every layer acc).
 This is chosen at build time (when you set the architecture).
+
+**The position of that point is `F`, and it was never written down before now.** A
+width alone does not define a fixed-point number. 32 bits with its low bit at `2^-26`
+holds `2^-26` to `2^5`. The same 32 bits with its low bit at `2^18` holds `2^18` to
+`2^49`. Those are different registers with the same width. The rule is:
+
+    F = ceil(log2(max absolute value of C of that layer)) - 31
+
+`F` is the largest position that still leaves the top of the register above the
+largest sum, so it is the finest point that cannot overflow. The measured values, from
+`python/width_probe.py`-style integer arithmetic on the test sets, rule `L1c`, UE5M3:
+
+| dataset | layer | max absolute `C` | top bit | `F` | span | bits lost at 32 |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| MNIST | 1 | 22.70 | `2^5` | -26 | 25 | 0 |
+| MNIST | 2 | 33.95 | `2^6` | -25 | 19 | 0 |
+| MNIST | 3 | 28.00 | `2^5` | -26 | 16 | 0 |
+| MNIST-1D | 1 | 93.99 | `2^7` | -24 | 30 | 0 |
+| MNIST-1D | 2 | 139.22 | `2^8` | -23 | 20 | 0 |
+| MNIST-1D | 3 | 143.00 | `2^8` | -23 | 19 | 0 |
+
+**Two consequences.** First, `F` differs per layer, so the constant is per layer unless
+one value is forced to serve all three, and then it must be the most negative of them,
+which costs the other layers headroom they do not need. Second, `F` is a bet on how
+large the output of that layer can get. Each octave of headroom costs one bit from the
+smallest term. The hardware cost of `F` is zero, because it enters the alignment as the
+shift amount `E - F`, and a constant shift amount is a constant in a subtract.
+
+**What happens when the bet is lost is not defined.** A register at `F` overflows at
+`2^(F+31)`. This document does not say whether the accumulator wraps or saturates.
+Saturate and count is the recommendation, because a wrapped accumulator corrupts the
+output and reports nothing.
 Why? It is chosen at build time because the sum of nb partial sums needs additional bits of growth. 
 How many? Depends on the number of blocks per that contraction. 
 Why? Because the more blocks a layer has in its contraction, the more terms are
@@ -302,14 +334,35 @@ about the sum of full-size terms and wrong about one register.
 the four column entries is 30 bits, on MNIST-1D with UE5M3, so the built register
 drops no bit on either dataset and keeps two bits of margin.
 
-**C is not bounded, so the margin is a bet and it is stated as one.** `P` is a
-product of two scales, so the format permits a ratio of 63.6 octaves for UE5M3 and
-127.2 octaves for UE6M2 between the largest and the smallest term. No fixed width
-holds every possible input. The guard-bit form of `spec.md` section 5.6 handled
-that by aligning a group to a reference exponent and flushing the terms that fell
-below it. A fixed binary point cannot flush, so it bets on the exponent spread of
-the data. Experiment E3 measured what the bet costs if it is wrong: 20 bits gives
-103.1 dB and 24 bits gives 148.9 dB of layer-1 SQNR, against about 20 dB of error
+**C IS BOUNDED, and the bound is much larger than 32.** This is the number that
+matters and it is not a bet. Take the worst legal combination of one reduction. Enumerate
+the 255 scale codes of a format, keep the largest and the smallest, and take 576 for the
+largest block sum, which is 12 payload units in all 16 positions for both operands:
+
+| case | top bit of the sum | finest low bit | width | 32 is short by |
+| :--- | ---: | ---: | ---: | ---: |
+| **worst VALUE**: `nb` maximal terms, all at the largest scale | 49 | `2^26` | **24** | covered, 8 to spare |
+| **worst SPREAD**: the same, plus one block at the floor of the window | 49 | `2^-36` | **86** | **54** |
+
+The same two numbers for UE6M2 are 22 and 148 bits.
+
+**The largest value is not the worst case. The worst case is the largest value and the
+smallest value in the same reduction.** A register must hold both at one binary point,
+so the width it needs is driven by the RATIO between those two terms and not by the size
+of either. `P` is a product of two scales, so the format permits a ratio of 63.8 octaves
+for UE5M3 and 127.6 for UE6M2, and 63.8 octaves plus an 18-bit term is the 86.
+
+**So the rule covers the value and not the spread.** `20 + ceil(log2(nb))` was
+calibrated on the value case, which needs 24 bits here, and 26 after the byte round is
+nearly that. It never claimed to cover 86.
+
+**What the guard-bit form did, and what the fixed point cannot do.** The form of
+`spec.md` section 5.6 aligned a group to a reference exponent and flushed the terms that
+fell below it. That is exactly the choice to stop covering the spread. A fixed binary
+point has no flush decision and no reference exponent, so it covers 32 of the 86 positions
+that the worst legal reduction spans, and the other 54 are lost.
+Experiment E3 measured what that costs: 20 bits gives 103.1 dB and 24 bits gives 148.9
+dB of layer-1 SQNR, against about 20 dB of error
 in the operands.
 
 **The 20 in the rule is a bound and not the measurement.** The bound is 13 bits

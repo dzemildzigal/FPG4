@@ -102,12 +102,29 @@ def main():
                   % (r["C_span"], r["top"], r["low"], r["octaves"]))
         print()
 
-    # The bound for any fixed width: P is a product of two scales, so its ratio can
-    # reach 2 * 9.58 = 19.16 decades for UE5M3 and 2 * 19.14 = 38.28 for UE6M2.
-    print("### the ratio a fixed point would have to span, as a bound")
-    for name, window in (("UE5M3", 9.574967914269711), ("UE6M2", 19.140980985886497)):
-        print("  %s  worst P ratio %5.1f octaves, so no fixed width holds every input"
-              % (name, 2 * window * np.log2(10)))
+    # The bound for any legal input. Enumerate the 255 scale codes, keep the largest
+    # and the smallest, and take 576 for the largest block sum, which is 12 payload
+    # units in all 16 positions for both operands. Two cases, and they are different:
+    #   worst VALUE  - nb maximal terms, all at the largest scale
+    #   worst SPREAD - the same, plus one block at the floor of the scale window
+    # The width is driven by the SPREAD, because one binary point must hold both ends.
+    print("### the width a fixed point needs for ANY legal input, nb = 49")
+    NB = 49
+    for name, table, M in (("UE5M3", q.e5m3, 3), ("UE6M2", q.e6m2, 2)):
+        k, n = [], []
+        for c in range(255):
+            mant, e = np.frexp(table[c])
+            n.append(int(round(mant * 2.0 ** (M + 1))))
+            k.append(e - (M + 1))
+        kmin, kmax, nmax = min(k), max(k), max(n)
+        top = int(np.ceil(np.log2(NB * 576 * nmax * nmax * 2.0 ** (2 * kmax))))
+        w_value = top - 2 * kmax + 1
+        w_spread = top - 2 * kmin + 1
+        print("  %s  scale codes %d, k in [%d, %d], n in [%d, %d]"
+              % (name, 255, kmin, kmax, min(n), nmax))
+        print("    worst VALUE  top 2^%d, low bit 2^%d -> %3d bits" % (top, 2 * kmax, w_value))
+        print("    worst SPREAD top 2^%d, low bit 2^%d -> %3d bits, 32 is short by %d"
+              % (top, 2 * kmin, w_spread, w_spread - 32))
 
 
 main()
