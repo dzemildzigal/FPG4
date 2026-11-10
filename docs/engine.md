@@ -1,6 +1,6 @@
-# The engine, not the model
+# The engine
 
-This document states what FPG4 is, what the model in this repository is for, and
+This document states what FPG4 is, what the MLP model in this repository is for, and
 the rule that every later circuit must obey. Read it before `datapath.md`.
 
 ---
@@ -8,15 +8,15 @@ the rule that every later circuit must obey. Read it before `datapath.md`.
 ## 1. What FPG4 is
 
 FPG4 is a **general purpose FP4 engine for FPGA**. It does two jobs: it runs
-inference, and it runs training, on the same arithmetic.
+inference, and it runs training.
 
-The engine accepts weights in any format, from the outside world. It **always
-converts them** to the block-scaled FP4 format: one 4-bit E2M1 payload per value,
+The engine accepts weights in any format, from the outside world. For the PYNQ-Z2 this will be done via RAM, so PS<---RAM--->PL. 
+It **always converts them** to the block-scaled FP4 format: one 4-bit E2M1 payload per value,
 one unsigned 8-bit scale per block of 16 values along the reduction axis. The
 scale is UE6M2 or UE5M3. That choice is still open.
 
 The engine is a **GEMM engine**. A GEMM is `C = A @ B`. Every learned operation in
-this project reduces to a GEMM plus a small number of elementwise steps.
+this project reduces to a GEMM plus a small number of elementwise steps for bias and activations.
 
 | operation | how it uses the engine |
 |---|---|
@@ -36,7 +36,7 @@ So the unit of design is the GEMM. The unit of cost is one **block-scaled MAC**.
 | **`nb`** | the number of block pairs in one reduction, that is `K / 16` |
 | **`k`** | the number of output columns of the GEMM |
 
-One block-scaled MAC is the unit. Not one sample. Not one layer.
+One contraction axis of the GEMM is multiple block-scaled MACs. 
 
 ---
 
@@ -53,18 +53,21 @@ The repository contains a 784-16-16-10 multilayer perceptron. Two hidden layers 
 | quantization damage | how many accuracy points the format costs, measured on two datasets |
 | training | that a training step runs without a float32 master copy of the weights |
 
-**The model does not set the area budget, the cycle budget, or the circuits.** It
-is small because a small model is quick to run and easy to check. It is not small
-because the engine targets small models.
+**The choice of model (and its size) is to keep track of the impact each step does to our datapath**. 
+The model is small because a small model is quick to run and easy to check. 
+It is not small because the engine targets small models.
 
-### The rule that follows
+### The rule for the RTL design at any level 
 
-**No circuit in this project may depend on 784, 16, or 10.**
+**All RTL for this project is to be architecture-agnostic**, thus *all* RTL 
+is to be optimized for **general ML operations** like (GEMM, MAC, etc.)
+and **not** optimized for a specific architecture.
+
 
 | quantity | is it a constant | what it must be |
 |---|---|---|
 | block size | 16 | a constant of the format. This is the only fixed number |
-| `nb` | 49, 1, 1 in the model | an input to the accumulator width rule, `20 + ceil(log2(nb))` rounded to a byte |
+| `nb` | 49, 1, 1 for this model | an input to the block-scaled MAC accumulator width rule, `20 + ceil(log2(nb))` rounded to a byte |
 | `k`, the output width | 16, 10 in the model | a build parameter, the number of parallel lanes |
 | `K`, the reduction length | 784, 16 in the model | free. A 4096-wide layer gives `nb = 256` |
 | `i`, the batch | 10,000 in the test set | free. One row at a time in inference, small groups in training |
@@ -72,14 +75,14 @@ because the engine targets small models.
 A layer with `K = 4096` has `nb = 256` and needs `20 + 8 = 28` accumulator bits,
 rounded to **32**. A layer with `K = 131072` has `nb = 8192` and needs
 `20 + 13 = 33`, rounded to **40**. The accumulator width is a parameter, not a
-constant of 32.
+constant of 32. For now we assume 32, but the real width would be configured upon model arch decision and load to the FPGA.
 
 ---
 
 ## 3. The rule for every pipeline step
 
 The engine is efficient only if **every step** is efficient. So every step gets
-four numbers, and all four are published whether they are good or bad.
+four metrics that are tracked during development.
 
 | number | unit | why it matters |
 |---|---|---|
@@ -90,9 +93,9 @@ four numbers, and all four are published whether they are good or bad.
 
 A step that is cheap in area and slow in cycles is not efficient. A step that is
 fast and large is not efficient. The step is efficient only when all four are
-known and all four are acceptable.
+known and all four are optimized.
 
-**A number without a source does not enter the table.** A number from a table size
+**Nomenclature about sources** A number from a table size
 is labelled `estimate`. A number from synthesis is labelled `measured`. A number
 from a formula is labelled `proven`.
 
@@ -203,7 +206,7 @@ as a trade, not as a win.
 
 | document | relation |
 |---|---|
-| `spec.md` | the normative definition of the format. Authority for every number. **Five sections still describe the rules before the 2026-10-18 amendment: 4.3 last paragraph, 4.4 step 6, 5.3, 5.4, and section 8 test 3.** Until they are rewritten, `spec.md` and the code disagree, and the code is right |
+| `spec.md` | the normative definition of the format. Authority for every number. Version 0.7: the amendment of 2026-10-18 is applied, and the layer accumulator follows the `20 + ceil(log2(nb))` rule of `datapath.md`. Three documents it cites stay in the archive, and section 1 of `spec.md` says which and why |
 | `datapath.md` | one GEMM, stage by stage, with the widths and the circuits. This document says why those stages are the ones that matter |
 | `experiment_plan.md` | the rungs. Each rung changes one factor |
 | `experiment_L1.md` | the measured accuracy damage on two datasets |

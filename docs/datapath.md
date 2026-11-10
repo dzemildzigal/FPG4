@@ -6,11 +6,12 @@ Every number in this document is either proven from the format or measured with
 
 **The model in this repository, 784-16-16-10, is a test fixture.** No circuit in
 this document may depend on those numbers. The block size of 16 is the only fixed
-number. `nb`, `k` and `K` are inputs to the circuit. See `engine.md` section 2.
+number. `nb`, `k` and `K` are inputs to the circuit. See `engine.md` section 2 for the 
+reasoning behind this decision.
 
-This document costs one GEMM. `engine.md` section 4 holds the scoreboard and the
-figure of merit for the whole engine, and `engine.md` section 3 states the four
-numbers that every stage below has to publish.
+This document defines a single GEMM. `engine.md` section 4 
+holds the scoreboard and the figure of merit for the whole engine, 
+and `engine.md` section 3 states the metrics needed for every experiment we do. 
 
 ---
 
@@ -62,7 +63,7 @@ Read this table once. Every later section uses these words.
 | **guard bit** | one extra bit kept at the bottom of a value so a right shift can round instead of truncate |
 | **round to nearest, ties to even** | the rounding rule of this project |
 | **bound** | the largest value the format can possibly produce. A bound is not a measurement |
-| **the FP4 claim** | every value that **enters a multiply** is stored as a 4-bit E2M1 payload plus an 8-bit scale. The scale product, the intra-block sum and the layer accumulator are wider, because they are sums and not operands. This sentence is the claim. Nothing in this project says "every bit is 4 bits". **The bias is the one stored tensor with no multiply, and it is stored at 32 bits, section 4.6** |
+| **the FP4 claim** | every value that **enters a multiply** is stored as a 4-bit E2M1 payload plus an 8-bit scale. The scale product, the intra-block sum and the layer accumulator are wider, because they are sums and not operands. This sentence is the claim. Nothing in this project says "every bit is 4 bits". **The bias is the one stored tensor with no multiply, and it is stored at the accumulator width, 32 bits for this model, section 4.6** |
 
 ---
 
@@ -103,7 +104,7 @@ for each (i, k, b):
     3a) take the scale code from the block from A, and scale code from the block from B
     3b) scale multiply those scales to make P.                                          -> makes P for that block pair, 14 bits, rounded once at 3b)
     4) calculate partial sum for this block S * P                                       -> makes the term, rounded once at 4)
-    5) add partial sum from 4) (term) into layer accumulator (partial sum acc of AxB)   -> accumulator of 32 bits, fixed point, is C_i_k (without bias and ReLU)
+    5) add partial sum from 4) (term) into layer accumulator (partial sum acc of AxB)   -> accumulator at the width of the rule in 4.5, 32 bits fixed point for this model, is C_i_k (without bias and ReLU)
    |
    v
 add bias (as the accumulator's initial value), ReLU                                      -> activation(partial sum + bias)
@@ -255,7 +256,7 @@ multiply. Keep it separate from `P` so `P` stays a clean scale product.
 | `S` | 12 magnitude bits | bounded by 2304 | 13 |
 | `P` | 8 significand bits | exponent spread | 14 |
 | `term` precision | `12 + 8 = 20` bits | | 21 with sign |
-| sum of `nb` terms | (?) ~20 bits for this arch, we settle on 32 for general arch | `+ ceil(log2(nb))` bits of growth, plus the exponent spread | width of the layer accumulator |
+| sum of `nb` terms | `20` bits measured sufficient, plus `ceil(log2(nb))` bits of growth | | the layer accumulator width, by the rule below |
 
 The layer accumulator is in the format of two's complement **fixed point**. 
 One binary point per layer, or, one binary point for all layers (max needed bits reproduced for every layer acc).
@@ -285,48 +286,74 @@ From those measurements:
 
 | claim | bits |
 |---|---|
-| enough to hold every term of this data exactly | 20 |
+| enough to hold one term of this data at full precision | 20 |
+| enough to sum one whole reduction of this data exactly | about 35 |
 | enough for the worst case the format can produce (estimate) | ~38 |
-| chosen | **32** |
+| built | **the rule below, which gives 32 for this model** |
 
 **20 bits was measured as sufficient, not as required.** `l1e_sweep.py` E3-24,
 E3-20 and E3-16 all produced the same accuracy as float64, at 148.9, 103.1 and
 70.0 dB of layer-1 SQNR. Nothing below 16 was tested, so the width where it
 breaks is not known.
 
-**32 bits is the choice.** A 32-bit integer adder is about 32 LUTs. An FP32 adder
-is about 250 to 400 LUTs, and it rounds on every add while the integer add does
-not. NVFP4 on Blackwell uses an FP32 accumulator because a Tensor Core amortises
-that area over a whole die. This project does not have that budget.
-Question by Dzemo: Should we stick to 32 bit? If we use 38 bit we would have a catch-all, it's an integer adder, doesn't make sense it would require **that** much more area. Thoughts?
-
-**Answer: stick to 32, and you are right that 38 is cheap. It is cheap and it buys
-nothing, which is a different thing.**
-
-| option | extra area, estimate | accuracy gained |
-|---|---|---|
-| 38 bits | 6 bits x 16 lanes = 96 more flip-flops, about 20% more adder | **zero measurable.** 20 bits already gives 103.1 dB against 20 dB for the operands. The accumulator is 80 dB below the noise floor of the format |
-
-38 bits is the worst case the *format* can produce, not the worst case this data
-produces. It needs the largest term and the smallest term of the whole exponent
-range inside one reduction, which no real activation tensor does.
-
-**A rule instead of a magic number:**
+**The width is a rule, not a number.** A constant of 32 is right for this model
+and wrong for the next one.
 
 ```
 layer accumulator bits = 20 + ceil(log2(nb)), rounded up to a multiple of 8
 
 nb = 49    -> 20 + 6  = 26 -> 32
+nb = 256   -> 20 + 8  = 28 -> 32
 nb = 1024  -> 20 + 10 = 30 -> 32
 nb = 8192  -> 20 + 13 = 33 -> 40
 ```
 
-The `20` is measured, the `ceil(log2(nb))` is proven from the term count. That
-gives 32 for this model and a defensible answer when the architecture changes.
+The `20` is the width that experiment E3 measured as sufficient, and that width
+includes the sign and the integer part. The proof from the term's own precision
+gives 21 with a sign, because 12 magnitude bits of `S` times 8 bits of the
+significand of `P` is 20 bits of precision. One bit either way changes nothing
+after the round to a byte. The `ceil(log2(nb))` is proven from the term count.
+**32 is what the rule gives for this model. It is not a constant of the design.**
+A model with `nb = 8192` gets 40 bits, and the bias store grows with it, because
+the bias is stored at the accumulator's width.
+
+**32 bits does not hold every term exactly, and that is a measured choice.** An
+exact sum of one reduction would need the whole span, about 35 bits on this data
+and about 38 in the worst case the format can produce. The largest and the
+smallest nonzero term of layer 1 differ by a factor of 6.09e4, and the smallest of
+them needs its own 20 bits. At 32 the low bits of the smallest terms are dropped.
+Experiment E3 sizes the drop: 20 bits gives 103.1 dB and 24 bits gives 148.9 dB of
+layer-1 SQNR, against about 20 dB of error in the operands. Both are 80 dB below
+the noise floor of the format, so the drop does not reach the result. Section 5.7 of
+`spec.md` states the same rule and the same measurement.
+
+An integer adder is about 1 LUT per bit, so 40 bits costs about 40 LUT6 per lane
+against 32 LUT6 at 32 bits. An FP32 adder is about 250 to 400 LUT6, and it rounds
+on every add while the integer add does not. NVFP4 on Blackwell uses an FP32
+accumulator because a Tensor Core amortises that area over a whole die. This
+project does not have that budget.
+
+Question by Dzemo: Should we stick to 32 bit? If we use 38 bit we would have a catch-all, it's an integer adder, doesn't make sense it would require **that** much more area. Thoughts?
+
+**Answer: no. Not as a constant. The rule is the decision.** You are right that a
+wider integer adder is cheap. That is the argument for the rule and against a
+fixed number.
+
+38 bits is not a candidate. It is the worst case the **format** can produce, not
+the worst case this **data** produces, and the rule never returns it. The rule
+returns 32 for every `nb` from 1 to 4096, and 40 above that.
+
+| option | extra area, estimate | accuracy gained |
+|---|---|---|
+| 38 bits fixed | 6 bits x 16 lanes = 96 more flip-flops, about 20% more adder, and still wrong at `nb = 8192` | **zero measurable.** 20 bits already gives 103.1 dB against 20 dB for the operands. The accumulator is 80 dB below the noise floor of the format |
+| the rule | 0 bits at `nb = 49` | the width follows the contraction, so the bound always holds |
+
+The earlier answer in this section was "stick to 32". It is withdrawn. It treated
+32 as the number to defend, and 32 is one point of a rule.
 
 ### 4.6 Stage 6, bias and ReLU
 
-**Decision: the bias is stored in 32 bits, in the same fixed-point format and at the
+**Decision: the bias is stored at the accumulator width, in the same fixed-point format and at the
 same binary point as the layer accumulator, and it is loaded as the accumulator's
 initial value.**
 
@@ -339,16 +366,20 @@ it never joins a block sum.
 
 | step | operation | width |
 |---|---|---|
-| store | one signed fixed-point constant per bias value, binary point as the accumulator | **32 bits per value** |
-| load | written into the accumulator as its **initial value**, before the first term | 32 |
-| ReLU | `max(0, acc)` after the last term | 32 |
+| store | one signed fixed-point constant per bias value, binary point as the accumulator | **the accumulator width, which is 32 bits per value for this model** |
+| load | written into the accumulator as its **initial value**, before the first term | the accumulator width |
+| ReLU | `max(0, acc)` after the last term | the accumulator width |
+
+**The bias width is not a second decision.** It is the accumulator width, because the
+bias is the accumulator's initial value. So the rule `20 + ceil(log2(nb))` sets both.
+A model with `nb = 8192` stores 40-bit biases. For this model it is 32 bits.
 
 There is no decoder. In inference the bias is a constant in the bitstream, so the
 load is a wire. Zero logic, zero cycles, zero MACs.
 
 | bias storage | bits, 42 values | share of the weight store | accuracy |
 |---|---:|---:|---|
-| **32-bit fixed point** | **1344** | 58,509 + 1344 = **59,853** | the `float64` column below |
+| **the accumulator width, 32-bit fixed point for this model** | **1344** | 58,509 + 1344 = **59,853** | the `float64` column below |
 | FP4 payload plus one scale per value | 504 | 59,013 | the `float64` column, plus or minus 0.10 |
 | FP4 payload, one shared scale per layer | 4*16+8 and 4*10+8 = 120 | 58,629 | loses up to 1.14 points |
 
@@ -467,7 +498,7 @@ cannot carry the old scale.
 | `P` exponent | 7 | 1 | yes |
 | `P` | **14** | 1 | no |
 | `S * P` | 21 | 1 | no, 1 rounding |
-| `term` into the layer accumulator | **32** | 1 | no, 1 rounding |
+| `term` into the layer accumulator | the accumulator width, 32 for this model | 1 | no, 1 rounding |
 
 Total rounding events for one pair of blocks: **3** (`P`, `S * P`, the add into
 the accumulator). Compare with 31 in a decoded float32 matmul, 16 multiplies plus
@@ -527,7 +558,7 @@ So the flip-flop count of the datapath is:
 
 | register | count |
 |---|---:|
-| layer accumulators, 16 at 32 bits | 512 |
+| layer accumulators, 16 at the accumulator width of 32 bits | 512 |
 | encoder block buffer | 512 |
 | encoded block register | 72 |
 | **total** | **1,096** |
@@ -627,11 +658,11 @@ Expect a power saving and no area saving.
 | `S` | 13 bits, exact | **decided**, proven from the format bounds |
 | `P` | 14 bits, 2 integer + 8 significand, 7 exponent | **decided**, proven from the format bounds |
 | scale product rounding | round to nearest, ties to even | **decided** |
-| layer accumulator | 32 bits, two's complement, fixed point | **chosen** |
-| layer accumulator width rule | `20 + ceil(log2(nb))` rounded to a byte, gives 32 here | **decided** |
+| layer accumulator | two's complement fixed point, at the width the rule gives. **32 bits for this model** | **decided** |
+| layer accumulator width rule | `20 + ceil(log2(nb))` bits rounded up to a multiple of 8. 32 for this model, 40 at `nb = 8192` | **decided**, and **32 is not a constant**. The earlier "stick to 32" answer is withdrawn |
 | layer accumulator width, evidence | 20 bits measured as sufficient, below 16 untested | **open** |
-| bias storage | **32 bits, signed fixed point, the accumulator's binary point**. 1344 bits for the model, +1.4% of the weight store | **decided**, the FP4 store is rejected in 4.6 with its measurements |
-| bias add | 32 bits, fixed point, loaded as the accumulator's **initial value**. No decoder, no adder | **decided**, corrected from "added after the last term" |
+| bias storage | **at the accumulator width, signed fixed point, the accumulator's binary point.** 32 bits per value for this model, 1344 bits, +1.4% of the weight store | **decided**, the FP4 store is rejected in 4.6 with its measurements |
+| bias add | the accumulator width, fixed point, loaded as the accumulator's **initial value**. No decoder, no adder | **decided**, corrected from "added after the last term" |
 | bias folded into the reduction | rejected. `nb` goes 1 to 2 on layers 2 and 3 | **decided against** |
 | `b3` padding to 16 | not padded. It is not a block, it is 10 constants | **decided** |
 | `P` normalisation | none. `P` is never stored, so no shift and no guard bit. 14 bits | **decided** |
