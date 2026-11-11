@@ -302,10 +302,21 @@ never 8 significand bits and 7 exponent bits at the same time. Two cases only:
 | UE6M2 | 6, because `7 * 7 = 49` | 7, because `63 + 63 = 126` | **13** | **1 spare bit** |
 
 The two fields are never both at their widest in the same build, and the register is
-14 bits wide in both. UE5M3 fills all 14 bits. UE6M2 uses 13 and leaves one unused.
-The field placement follows the format: in a UE5M3 build the significand is bits 13
-to 6 and the exponent is bits 5 to 0, and in a UE6M2 build the significand is the low
-6 bits zero extended and the exponent is 7 bits.
+14 bits wide in both. **So the field split must follow the format, and the two
+formats split the same 14 bits differently:**
+
+| build | significand field | exponent field | layout |
+| :--- | ---: | ---: | :--- |
+| UE5M3 | 8, and `225` needs all 8 | 6, and `62` needs all 6 | `[ 8 significand ][ 6 exponent ]` |
+| UE6M2 | 7, and `49` needs only 6, so one bit is always 0 | 7, and `126` needs all 7 | `[ 7 significand ][ 7 exponent ]` |
+
+For UE6M2 the alternative is the truthful `6 + 7 = 13` inside the same 14-bit
+register, with the top bit of the significand field held at zero. Both are the same
+register. The 7-bit significand field is chosen because it fills the 14 bits exactly.
+
+Because the split differs, the binary point of the significand differs too: 6 fraction
+bits for UE5M3 and 4 for UE6M2. That difference is one of the two parts of `K0`, so it
+is a constant in the alignment shift and not a change of logic.
 
 **The one code that no value uses.** In a UE5M3 build the exponent field is 6 bits
 and the largest legal sum is 62, so the code 63 is unused. In a UE6M2 build the field
