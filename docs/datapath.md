@@ -322,6 +322,44 @@ product is not a limiting factor and cannot become one.
 in block format without re-encoding it. Then `P` becomes a stored scale and must
 be normalised. That is not this design.
 
+#### does normalising `x` make `S * x` cheaper? No. Here is the count, because that is the real question.
+
+Normalising `x` would mean forcing it into `[2, 4)`, so the most significant bit is
+always 1 and could be implied instead of stored. The multiply that follows is
+`S * x`, which is built as `S * N` and then a shift. `S` is 13 bits signed and `N`
+is 8 bits.
+
+| | `x` not normalised, which is the built form | `x` normalised to `[2, 4)` |
+| :--- | :--- | :--- |
+| `N` range | 64 to 225 | 128 to 255 |
+| AND gates that form the partial products | `13 * 8 = 104` | `13 * 7 = 91`, the top bit is implied |
+| partial product rows | 7 | 7 |
+| **the adder tree, which is the cost** | **about 105 adders, about 105 LUT6** | **the same, about 105 adders** |
+| AND gates in LUT6, two per LUT6 | 52 | 46 |
+| the normaliser, once, shared by all lanes | 0 | an 8-bit 2-to-1 shift mux, 8 LUT6, plus a 6-bit exponent increment, 6 LUT6, so **14 LUT6** |
+| rounding events inside the region that is otherwise exact | **0** | **1**, in about half of the block pairs |
+| size of the product | 21 bits | 21 bits, **unchanged** |
+
+Net at 4 lanes: 24 LUT6 saved and 14 LUT6 spent, so **about 10 LUT6 out of about
+1,800, which is half of one percent**, all figures estimates until E9. The adder
+tree does not change, and the adder tree is where the area is. The product width
+does not change either, because `x` still spans `1` to `3.5` after normalisation. A
+normalising shift moves the most significant bit, it does not remove a magnitude
+range.
+
+**The real price is not area, it is exactness.** In the built form `x = N / 2^(2M)`
+is exact. `N` is an integer and `2^(2M)` is a binary point, so no bit is lost. That
+exactness is what makes `S * P` exact, and what lets the whole reduction run as
+integer arithmetic with one rounding at the very end. Normalising forces a right
+shift on the half of the pairs that already sit above 2, and a right shift of an
+odd `N` discards a bit. So normalising buys 0.5 percent of the multiply area and
+pays with a rounding event in the one region this design keeps exact.
+
+**The wider form does not need any help from the narrow one.** `S * N` with
+`N` in `64..225` is a 13-by-8 multiply with 7 adder rows. `S * N` with `N` in
+`128..255` is the same 7 adder rows and one fewer AND row. The multiplier does not
+get shorter, because the significand still has 8 bits of value.
+
 Mistakes made along the way:
 
 1) **Do not add the fractional bit counts of the two operands.** The product can
