@@ -305,10 +305,21 @@ The two fields are never both at their widest in the same build, and the registe
 14 bits wide in both. **So the field split must follow the format, and the two
 formats split the same 14 bits differently:**
 
-| build | significand field | exponent field | layout |
-| :--- | ---: | ---: | :--- |
-| UE5M3 | 8, and `225` needs all 8 | 6, and `62` needs all 6 | `[ 8 significand ][ 6 exponent ]` |
-| UE6M2 | 7, and `49` needs only 6, so one bit is always 0 | 7, and `126` needs all 7 | `[ 7 significand ][ 7 exponent ]` |
+| build | significand field | exponent field | layout | significand bit pattern |
+| :--- | ---: | ---: | :--- | :--- |
+| UE5M3 | 8, and `225` needs all 8 | 6, and `62` needs all 6 | `[ 8 significand ][ 6 exponent ]` | `xx.yyyyyy`, 2 integer and 6 fraction, and `xx` is never `00` |
+| UE6M2 | 7, and `49` needs only 6, so one bit is always 0 | 7, and `126` needs all 7 | `[ 7 significand ][ 7 exponent ]` | `0xx.yyyy`, 1 spare then 2 integer and 4 fraction, and `xx` is never `00` |
+
+**One exponent field per build, and it holds one integer, the sum.** The inputs to
+that sum are not the field width:
+
+| build | one scale's exponent `e` | the sum `Y = e_A + e_W` | the field |
+| :--- | ---: | ---: | ---: |
+| UE5M3 | 5 bits, `0..31` | `0..62` | 6 bits |
+| UE6M2 | 6 bits, `0..63` | `0..126` | 7 bits |
+
+So the sum needs one more bit than each addend. It is not "two 7-bit integers": each
+addend is 6 bits for UE6M2 and 5 bits for UE5M3.
 
 For UE6M2 the alternative is the truthful `6 + 7 = 13` inside the same 14-bit
 register, with the top bit of the significand field held at zero. Both are the same
