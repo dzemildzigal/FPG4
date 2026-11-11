@@ -818,6 +818,146 @@ cannot carry the old scale.
 
 ---
 
+### 4.8 The encoder, as a unit
+
+**One block of 16 raw values in. One 8-bit scale code and sixteen 4-bit payload
+codes out. Four counters. That is the whole interface.**
+
+It is stage 1 and stage 9 of the pipeline, so it runs on both sides of the MAC: once
+on the left operand and once on the right operand, before every layer, and once on the
+layer's output before the next layer. At inference the weight side does not run,
+because the weight codes are stored once. In training both sides run, because the
+weights move.
+
+#### The nine pieces
+
+| # | piece | what it does | LUT6, estimate |
+| ---: | :--- | :--- | ---: |
+| 1 | block buffer | 16 values of 25 bits: sign, 8-bit exponent, 16 significand bits. Section 4.8.4 says why 16 | 0, it is 400 flip-flops |
+| 2 | magnitude | drop the sign bit and carry it to the packer | 0 |
+| 3 | **`amax`** | 15 pairwise maxima on the full 24-bit magnitude, 4 levels | **about 720** |
+| 4 | **scale snap** | leading-one detect, then 3 comparators against the 8 boundaries of the octave. No division | about 35 |
+| 5 | window clamp | compares the code against the declared floor and selects | about 10, if built |
+| 6 | payload quantizer | `v / s` rounded to the nearest of 8 magnitudes, 4-bit code out | about 50 each |
+| 7 | packer | 16 codes of 4 bits plus one code of 8 bits, 72 bits | 0, it is wiring |
+| 8 | counters | 4 saturating counters, one enable each | about 40 |
+| 9 | control | the cycle sequence of pieces 1 to 7 | about 30 |
+
+`amax` is the single largest piece and it is **shared by every value per cycle you
+choose**. The quantizer count is the only part that grows with throughput.
+
+#### The division by 6 is not built
+
+```
+amax / 6 = table[c]        is the same statement as        amax = 6 * table[c]
+```
+
+So the datapath never divides. It compares `amax` against the 254 boundaries between
+neighbouring codes:
+
+```
+threshold[c] = 6 * (table[c] + table[c+1]) / 2
+```
+
+| check | result |
+| :--- | :--- |
+| 254 thresholds, monotone | yes |
+| 500,000 random `amax` over 30 decades, compare against divide then nearest | **0 disagreements** |
+| the comparison is a search over 254 values | **no.** UE5M3 has 8 codes per octave, so the code is a leading-one detect plus 3 comparators, about 35 LUT6 |
+
+**Why the midpoints and not `6 * table[c]`.** `6 * table[c]` is a floor, so the chosen
+scale is up to half a code step too small and every payload sits that much higher.
+The midpoint form is the same nearest rule as `encode_scale` in `quant.py`, so the
+hardware and the Python agree bit for bit.
+
+**The `/4` set for `four6` is the same structure with the factor 4.** It is a second
+snap of about 35 LUT6, not a second divider.
+
+**A shift-add `1/6` was proposed and it is recorded here.** `q = (x + (x<<1) + (x<<3) +
+(x<<5)) >> 8` is `x * 43/256`, which is `+0.78125%` against `1/6`. It is the **exact**
+magic constant for 6-bit `x`: `floor(x * 43 / 256) == x // 6` for every `x < 64`, and
+the first failure is at `x = 131`. An exact form exists for every width, `q = (x*M) >>
+k` with `M` equal to `101010...101011` in binary, and it costs about `N/2` adders:
+`M = 171` and 4 adders at 8 bits, `M = 2731` and 6 adders at 12 bits, `M = 43691` and
+8 adders at 16 bits. **None of that is needed, because the snap replaces the division.**
+
+#### The payload quantizer
+
+| property | value |
+| :--- | :--- |
+| what it computes | the nearest of `{0, 0.5, 1, 1.5, 2, 3, 4, 6}` times `s` |
+| tie rule | **nearest, ties to the even code.** The same rule as `encode_scale` |
+| output | 4-bit code, plus the sign carried separately |
+| cost | about 50 LUT6 each, estimate |
+
+#### 4.8.4 The width of one value in the buffer
+
+**16 significand bits, not 32.** Measured by `python/amax_probe.py`, seed 42, UE5M3,
+L1d scope, both datasets. The row at 53 bits reproduces the L1d per-seed numbers, so
+the harness is the same. Truncation of the significand, `max(trunc(x)) = trunc(max(x))`
+because truncation is monotone, so the `amax` tree only needs a narrower comparator.
+
+| significand bits | MNIST `amax/6` | MNIST `four6` | MNIST-1D `amax/6` | MNIST-1D `four6` | scale codes changed |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 53, float64 | 88.50 | 88.27 | 54.74 | 55.78 | none, it is the reference |
+| **24, FP32** | 88.50 | 88.27 | 54.74 | 55.78 | **0.00%** |
+| **16** | 88.51 | 88.27 | 54.75 | 55.78 | **0.00%** |
+| 12 | 88.46 | 88.19 | 54.74 | 55.81 | 0.12% to 0.25% |
+| 8 | 88.31 | 88.08 | 54.71 | 55.65 | 2.84% to 3.21% |
+
+| finding | evidence |
+| :--- | :--- |
+| float64 to FP32 changes nothing | 0.00% of codes, accuracy equal to two decimals, both datasets |
+| 16 bits of `amax` changes nothing | 0.00% of codes, both datasets, both rules |
+| 8 bits is where it starts to show | 3% of codes, and on MNIST-1D the payload path loses 1.05 points when it is truncated to 8 as well |
+| **the payload sets the floor, not `amax`** | at 8 bits the code changes are shared, but the accuracy loss only appears when the payload values are truncated |
+
+So one buffered value is `1 + 8 + 16 = 25` bits, and the buffer is `16 * 25 = 400`
+flip-flops.
+
+#### The cycles per block are OPEN, and they are a design parameter
+
+**A previous revision of this document stated "8 cycles per block or fewer" as a
+target. That number was an estimate of what the encoder would cost. It was never
+derived from anything, and it is not a requirement.**
+
+The derived number comes from the MAC. Layer 1:
+
+```
+block-MACs per sample = 49 blocks x 16 columns + 1 x 16 + 1 x 10 = 810
+one block-MAC = 16 products, one product per cycle per lane
+4 lanes:            810 / 4 = 203 cycles
+activation blocks to encode per sample = 49 + 1 + 1 = 51
+```
+
+**So the MAC consumes 51 encoded blocks in 203 cycles.** The encoder rate that
+balances it is one block per 4 cycles. Every other rate is a choice, and the choice is
+open until the engine is measured.
+
+| cycles per block | values per cycle | encoder cycles, layer 1 | against the 203-cycle MAC | LUT6, estimate |
+| ---: | ---: | ---: | :--- | ---: |
+| **8** | 2 | 408 | the MAC is idle 50% of the time | about 905 |
+| **4** | 4 | 204 | balanced | about 1,005 |
+| **2** | 8 | 102 | the encoder is twice as fast as the MAC needs | about 1,205 |
+| **1** | 16 | 51 | the encoder is four times as fast, and it fills a 16-lane MAC | about 1,605 |
+
+**All four are legal designs and all four are open.** The cost column is built as
+`720 (amax) + 35 (snap) + 10 (clamp) + 50 * values per cycle (quantizers) + 40
+(counters) + 30 (control)`.
+
+**One constraint that is not open:** at 1 cycle per block the whole `amax` tree, 4
+comparators deep, must settle inside one clock. That is 6 to 9 ns, so 100 MHz and not
+125 MHz. At 2 cycles or more the clock has room.
+
+#### What this section does not fix
+
+| item | status |
+| :--- | :--- |
+| the critical path of each piece | rung E9 measures it |
+| the area of `four6` against `amax/6` | both are in the simulation. `four6` is a second snap and a second payload pass, about 2 times the encoder. If the simulation drops `four6`, the RTL drops it |
+| the corner cases | NaN and infinity give code 255 and raise `nonfinite_blocks`. A zero block gives code 0 and raises `zero_blocks`. A scale above code 254 clamps to 254 and raises `scale_saturated`. A scale below code 0 clamps to 0 and raises `scale_underflow` |
+| a fifth counter for the window clamp of section 4.5 | **only if the clamp is built.** It is proposed and not decided |
+
 ### The accumulator: one scale per sum
 
 **Section 4.5 holds the decision and the evidence. This block keeps only the two
@@ -916,7 +1056,7 @@ block is buffered.
 
 | encoder resource | size | note |
 |---|---:|---|
-| block buffer | **512 flip-flops** | 16 values at 32 bits. Fixed, independent of `i`, `j` and `k` |
+| block buffer | **400 flip-flops** | 16 values at 25 bits: sign, 8-bit exponent, 16 significand bits. Section 4.8.4 measures why 16 significand bits are enough. Fixed, independent of `i`, `j` and `k` |
 | encoded block register | 72 flip-flops | 16 payload codes at 4 bits, one scale at 8 bits |
 | blocks encoded per sample, this model | 51 | 49 for the input, 1 for each hidden layer |
 | blocks encoded in general | `nb` per row of `A` | for a layer of reduction `K`, that is `K / 16` per row |
@@ -926,12 +1066,12 @@ So the flip-flop count of the datapath is:
 | register | count |
 |---|---:|
 | layer accumulators, one per lane, at the accumulator width of 48 bits. **The decided engine has 4 lanes** | **192**, and 768 if all 16 output neurons are in flight |
-| encoder block buffer | 512 |
+| encoder block buffer | 400 |
 | encoded block register | 72 |
-| **total** | **776** |
+| **total** | **664** |
 
-**The encoder buffer is 512 flip-flops against 192 for the four lane accumulators.**
-The buffer is 2.7 times the whole accumulator state of the engine, and it is one block.
+**The encoder buffer is 400 flip-flops against 192 for the four lane accumulators.**
+The buffer is 2.1 times the whole accumulator state of the engine, and it is one block.
 That is why the encoder is the next design problem.
 The previous version of this section counted only the 512 of the accumulators.
 
@@ -1041,11 +1181,11 @@ Expect a power saving and no area saving.
 | `P` circuit | two small tables plus shifts and adds, about **20 LUT6**, no DSP | **decided**, estimate |
 | `P` unit count | one per `(i, b, k)`, so 16 for layer 1 at 320 LUT6, or fewer at a higher rate | **open**, a scheduling choice, not a format choice |
 | `S * P` circuit | **13x8** shift-add multiply, about 135 LUT6, plus a 21-bit alignment shifter, about 105 LUT6, plus the `S` tree of 15 adders, about 161 LUT6. **About 450 LUT6 per lane for all three.** 4 lanes is about 1800 LUT6, which is 9% of an Artix-7 35T. Or 16 DSP48 if DSP hard blocks are allowed | **open**, rung E9 decides. The earlier "1600 LUT6 for 16 lanes" counted the multiplier only and left out the `S` tree and the shifter |
-| encode `A` circuit | **not designed.** `amax` over 16 values, one scale encode, 16 payload quantisers, one pack into 72 bits | **open.** It is steps 1 and 9 of the engine scoreboard, it runs on both sides of every layer, and it is the largest unaccounted element in the datapath |
-| encode cost, rule `amax/6` | one scale encode and one payload pass per block | estimate |
-| encode cost, rule `four6` | two scale encodes, two payload passes, 16 subtractions, 16 absolute values, two adds, one compare. Close to **twice** the encoder | **estimate.** This is the hardware price of a rule that is still open, and the accuracy difference between the two rules is not yet visible on three seeds |
-| encoder block buffer | `amax` needs all 16 values before any of them can be encoded, so the block cannot be streamed. One block of 16 values at 32 bits is **512 flip-flops**, counted in section 5.3 | **decided by the format** |
-| encoder cycles | target **8 cycles or fewer per block**. The inference speed of the engine is set by this number, because the encoder feeds the MAC array | **open**, and it is the next design decision |
+| encode `A` circuit | **section 4.8 defines it as a unit.** Nine pieces, `amax` 720 LUT6, scale snap 35 LUT6 with no division, one payload quantiser per value at 50 LUT6, packer, four counters, control | **defined, and costed as an estimate.** The `amax` tree is the largest piece and it is shared by every throughput choice |
+| encode cost, rule `amax/6` | one snap against 254 midpoints, then one payload pass per block. **No division.** `amax / 6 = table[c]` is the same statement as `amax = 6 * table[c]`, so the six is folded into the constants | **decided**, the form. Estimate in 4.8 |
+| encode cost, rule `four6` | a second snap against a `/4` set of midpoints, a second payload pass, 16 subtractions, 16 absolute values, two adds, one compare. Close to **twice** the encoder | **estimate.** `four6` stays in the simulation, and if the simulation drops it the RTL drops it. `amax/6` is the favoured rule |
+| encoder block buffer | `amax` needs all 16 values before any of them can be encoded, so the block cannot be streamed. **One value is 25 bits, not 32**, so one block is 400 flip-flops. Section 4.8.4 measures why 16 significand bits are enough | **decided**, from the measurement in 4.8.4 |
+| encoder cycles | **8, 4, 2 or 1 cycles per block, all four open.** The derived balance point is 4, because the 4-lane MAC needs a block every 4 cycles. 8 makes the MAC idle half the time. 1 fills a 16-lane MAC and needs 100 MHz rather than 125 | **open by decision.** Section 4.8 gives the area of each. The earlier "8 or fewer" was an estimate and never a requirement |
 | figure of merit | about **28 LUT6 per payload-MAC per cycle**, per lane | estimate, `engine.md` section 4 |
 | order of operations | integer block sum first, then one scale multiply | **decided**, this is the defer camp |
 | C's scale | computed from C, never taken from `P` | **decided** |
