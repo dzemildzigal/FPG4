@@ -798,6 +798,72 @@ cannot carry the old scale.
 
 ---
 
+### The accumulator: what it can store, and what nobody has decided
+
+**A term has its own exponent. A sum has one.** That single fact is the whole
+problem, and it is why alignment happens in every model, not in one of them.
+
+| object | how many exponents it needs | why |
+| :--- | :--- | :--- |
+| one term `S * N * 2^(Y + K0)` | one per term | each block pair has its own scale |
+| the sum of `nb` terms | **one for the whole sum** | the result is a single value, so it has a single scale |
+
+So `21 + 7 = 28` describes a **term word**. It cannot describe an accumulator: the
+7 exponent bits of an accumulator would all hold the same value, because the sum has
+one scale, and that value is a constant of the build. Seven flip-flops holding a
+constant are not a format.
+
+**What follows, and it is not a decision, it is arithmetic.** An accumulator is one
+integer at one binary point. Its bits are all significand. The exponent of each term
+leaves the register at the alignment and becomes a **shift**. That is true for a
+fixed-point accumulator and for a floating-point accumulator alike: the float one
+does the same shift and then renormalises, which is where it rounds.
+
+**What is decided: nothing about the format.** These stay open:
+
+1. the numeric format of the accumulator, fixed point or floating point
+2. if fixed point, the position of the point, named `F`
+3. what happens on overflow, wrap or saturate
+
+**What the point must satisfy.** Two inequalities, and the width is whatever satisfies
+both:
+
+```
+no truncation at the bottom:  F <= low,   the finest low bit of any term
+no overflow at the top:       F + width - 1 >= top,   the top bit of the largest sum
+so:                           width >= top - low + 1
+```
+
+`top` is the top of the largest **sum**, not of the largest term. The sum of 49 terms
+reaches higher than any single term, so the register must be wider than the term
+spread. Measured, UE5M3, rule `L1c`, exact integer path, 10,000 test samples:
+
+| dataset | layer | `nb` | top of largest sum | finest low bit | width needed | spare at 32 |
+| :--- | :--- | ---: | ---: | ---: | ---: | ---: |
+| MNIST | 1 | 49 | `2^5` | `2^-22` | 28 | 4 |
+| MNIST | 2 | 1 | `2^6` | `2^-12` | 19 | 13 |
+| MNIST | 3 | 1 | `2^5` | `2^-10` | 16 | 16 |
+| MNIST-1D | 1 | 49 | `2^7` | `2^-24` | **32** | **0** |
+| MNIST-1D | 2 | 1 | `2^8` | `2^-11` | 20 | 12 |
+| MNIST-1D | 3 | 1 | `2^8` | `2^-10` | 19 | 13 |
+
+**MNIST-1D layer 1 needs all 32 bits and has none spare.** A 31-bit register would
+overflow it. This replaces the earlier statement that 32 had two bits of margin: that
+figure took the top of the largest term and not the top of the largest sum.
+
+**So the only freedom is where the point sits, and the spare bits are bought from one
+end or the other.** Any `F` between `top - width + 1` and `low` is legal:
+
+| where the point goes | `F` | what it costs |
+| :--- | :--- | :--- |
+| at the bottom, finest | `F = low` | no term ever loses a bit, and the sum overflows at `2^(F + width - 1)`. On MNIST-1D that is `2^7 = 128` against a measured 93.99, so 1.36 times of headroom |
+| at the top, coarsest | `F = top - width + 1` | the sum can never overflow, and every term below `2^F` loses `F - low` bits. On MNIST-1D that value is `-24`, which equals `low`, so this costs nothing either, because the requirement is exactly 32 |
+| in the middle | any value between | the margin is split between the two ends |
+
+**The one number that makes this urgent.** On MNIST-1D layer 1 there is no spare bit,
+so the choice of `F` is a choice of which failure mode the datapath has. A 31-bit
+register does not have that choice, it just fails.
+
 ## 5. The complete bit budget
 
 ### 5.1 One pair of blocks
@@ -808,19 +874,28 @@ cannot carry the old scale.
 | payload code of B | 4 | 16 | n/a, stored |
 | scale code of A | 8 | 1 | n/a, stored |
 | scale code of B | 8 | 1 | n/a, stored |
-| payload integer | 4 magnitude | 32 | yes |
+| payload integer | 4 magnitude | 32 | **yes**, a table lookup |
 | LUT address | 8 | 16 | yes |
-| LUT output, one payload product | 9 | 16 | **yes** |
-| `S`, intra-block accumulator | **13** | 1 | **yes** |
-| `P` significand | 8 | 1 | no, 1 rounding |
-| `P` exponent | 7 | 1 | yes |
-| `P` | **14** | 1 | no |
-| `S * P` | 21 | 1 | no, 1 rounding |
-| `term` into the layer accumulator | the accumulator width, 32 for this model | 1 | no, 1 rounding |
+| LUT output, one payload product | 9 | 16 | **yes**, 5-bit by 5-bit integers, magnitude at most 144 |
+| `S`, the block sum | **13** | 1 | **yes**, the sum of 16 integers, bound 2304 |
+| `N`, the significand of `P` | 8 | 1 | **yes**, `n_A * n_W`, bound 225 |
+| `Y`, the exponent of `P` | 7 | 1 | **yes**, `e_A + e_W`, bound 126 |
+| `P` | **14** | 1 | **yes**, the 14 bits are `N` and `Y`, checked over all 65,025 pairs |
+| `S * N` | 21 | 1 | **yes**, a 13-bit by 8-bit integer product, bound 518,400 |
+| the alignment shift | the accumulator width | 1 | **exact, or truncating** when a term sits below the accumulator's point |
+| the re-encode of the result | 4 + 8 | 1 | **1 rounding**, once per output value |
 
-Total rounding events for one pair of blocks: **3** (`P`, `S * P`, the add into
-the accumulator). Compare with 31 in a decoded float32 matmul, 16 multiplies plus
-15 adds, each of which rounds.
+**The multiply path is exact.** Every intermediate from the 4-bit payload codes to
+the 21-bit term is an integer product or an integer sum, so no bit is lost. `P` does
+not round: it is `N * 2^(Y + K0)` with both fields exact. `S * P` does not round: it
+is the exact product of a 13-bit integer and an 8-bit integer. The only rounding in
+the datapath is the **re-encode of the final result, once per output value**, and
+the only place a bit can be lost before that is the **alignment shift**, and only
+when the accumulator's point sits above a term's low bit.
+
+An earlier revision of this table counted `P`, `S * P` and the add as three rounding
+events. That was wrong. Compare with 31 rounding events in a decoded float32 matmul,
+16 multiplies plus 15 adds, each of which rounds.
 
 ### 5.2 One full layer, our model
 

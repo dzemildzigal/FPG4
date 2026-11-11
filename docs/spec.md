@@ -1,6 +1,6 @@
 # FPG4 specification
 
-Version 0.11. Status: draft.
+Version 0.12. Status: draft.
 
 ## 1. Purpose
 
@@ -422,13 +422,19 @@ octaves below the largest term. The failure is self-limiting. Section 4.5 of
 `datapath.md` gives the one case where it is not, which needs a span above 47 and
 cancellation between two large terms at the same time.
 
-**The worst entry is 30 bits and the built accumulator is 32, so on these two
-datasets the register drops no bit.** That is a statement about this data, and it is
-not a statement about the format. A fixed width does hold every legal input, and it
-is much wider than 32, because the largest term and the smallest term of one
-reduction must share one binary point. Enumerating the 255 scale codes, with 12
-payload units in all 16 positions of both operands and `nb = 49`, the worst legal
-reduction spans:
+**The worst entry is 32 bits, and 32 is what is built, so on these two datasets the
+register drops no bit and on one of them it has nothing spare.** The table above gives
+the width that drops no bit of any term, and it takes the top of the largest term. The
+register must also hold the largest sum, and with `nb = 49` the sum reaches two octaves
+higher than the largest term. The requirement is therefore
+`top of the largest sum - finest low bit + 1`, which is 28 bits for MNIST layer 1 and
+**32 bits for MNIST-1D layer 1**. A 31-bit register would overflow MNIST-1D.
+
+That is a statement about this data, and it is not a statement about the format. A
+fixed width does hold every legal input, and it is much wider than 32, because the
+largest term and the smallest term of one reduction must share one binary point.
+Enumerating the 255 scale codes, with 12 payload units in all 16 positions of both
+operands and `nb = 49`, the worst legal reduction spans:
 
 | case | UE5M3 | UE6M2 |
 | :--- | ---: | ---: |
@@ -438,9 +444,9 @@ reduction spans:
 So 32 bits covers 32 of the 86 positions that the worst legal reduction spans, and
 the other 54 are lost. That is what a fixed point does, and `datapath.md` 4.5 gives
 the two conditions under which the loss stops being harmless. On the measured
-tensors the span is 25 to 30 bits, because a trained network does not put the floor
-of the window and the top of the window in the same layer: the block maxima of one
-real layer cover 4.5 decades, which is 15 octaves.
+tensors the requirement is 28 to 32 bits, because a trained network does not put the
+floor of the window and the top of the window in the same layer: the block maxima of
+one real layer cover 4.5 decades, which is 15 octaves.
 
 Experiment E3 measured the cost of a shortfall: 20 bits gives 103.1 dB and 24 bits
 gives 148.9 dB of layer-1 signal to noise ratio, against about 20 dB of error in the
@@ -681,6 +687,7 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
 | 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
 | 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |
+| 0.12 | 2026-11-09 | Section 5.7 now counts the top of the largest SUM and not only the top of the largest term. The requirement is `top of the largest sum - finest low bit + 1`, which is 28 bits for MNIST layer 1 and 32 for MNIST-1D layer 1. The earlier "30 bits, two bits of margin" is withdrawn: at 32 bits MNIST-1D layer 1 has nothing spare. |
 | 0.11 | 2026-11-09 | Section 5.6 is corrected. Revision 0.10 stated a rule `F = ceil(log2(max absolute C)) - 31` for the position of the binary point and treated it as decided. It was never decided. The value came from a script written to run an experiment. The section now records two open decisions: the numeric format of the accumulator, and the position of the point if it is fixed point. The measurements stay as data. |
 | 0.10 | 2026-11-09 | The position of the binary point of the accumulator is now stated for the first time, as a per-layer constant `F = ceil(log2(max absolute C)) - 31`, with the measured `F` of all six layer and dataset pairs. Section 5.6 also states that overflow behaviour is not defined and is an open decision. |
 | 0.9 | 2026-11-09 | Section 5.7 and `datapath.md` section 4.5 now state the exact condition under which a legal tensor defeats 32 bits, and the measurement that shows the failure is self-limiting: a span of 40 gives 191.2 dB and a span of 51 gives 230.1 dB. `python/width_probe.py` builds both. |
