@@ -1,6 +1,6 @@
 # FPG4 specification
 
-Version 0.12. Status: draft.
+Version 0.13. Status: draft.
 
 ## 1. Purpose
 
@@ -317,7 +317,7 @@ The shift by E is exact when E is zero or positive. When E is negative, the shif
 | Mantissa product P, a bound and not a register | 8 bits | 225 |
 | Scaled block value T_b | 18 bits signed (UE6M2), 20 bits signed (UE5M3) | 112,896 or 518,400 |
 | Scale exponent offset E | 7 bits signed (UE5M3), 8 bits signed (UE6M2) | -38 to 22, or -68 to 58 |
-| Layer accumulator | `20 + ceil(log2(nb))` bits, rounded up to a multiple of 8 | section 5.7. 32 bits for this model |
+| Layer accumulator | **48 bits**, one width for the engine | section 5.7. The point is `min(y)` of the layer, or the fixed `24.24` that the experiments use |
 | Guard-bit budget G | 12 insurance, 16 insurance-plus. **Not used by the built datapath** | section 5.7, insurance form only |
 
 ### 5.6 Alignment
@@ -326,16 +326,19 @@ The layer accumulator sums the block contributions, and the contributions have
 different exponents. They must be brought to one binary point before they add.
 There are two ways to choose that point.
 
-**The built form: a fixed binary point. TWO THINGS ARE NOT DECIDED.**
+**The built form: one fixed binary point per layer. Decided.**
 
-1. **The numeric format of the accumulator is not decided.** Fixed point and floating
-point are both open. No measurement separates them yet.
-2. **If it is fixed point, the position of the point is not decided.** No value of
-   `F` is assumed anywhere in this document, and no section may use one.
+1. **The numeric format is two's complement fixed point.** A floating-point
+   accumulator rounds on every add. The fixed point rounds once per output value.
+2. **The point is `p = min(y)` of the layer**, where `y = Y + K0` is the exponent of
+   one term and `Y = e_A + e_W` is the sum of the two scale exponents. That is the
+   bottom of the scale window, and it is a field of the layer descriptor.
+   **The experiments use a fixed `24.24` point.** It is exact on all six layers of
+   the two datasets, because no `min(y)` is below -24 and no sum reaches `2^23`.
 
-What the datapath does require, whichever way the decision goes, is that every term of
-one reduction reaches one common point before the add. That is arithmetic and not a
-choice: terms arrive at different exponents, and a sum needs one scale.
+Every term of one reduction must reach one common point before the add. That is
+arithmetic and not a choice: terms arrive at different exponents, and a sum needs one
+scale.
 
 Measured, as data and not as a decision. These are the largest sums of each layer on
 the test sets, 10,000 samples, rule `L1c`, UE5M3, with the top bit and the span that
@@ -356,7 +359,7 @@ largest term of the same reduction loses low bits, and a term that falls entirel
 below the point adds zero.
 
 **Overflow is not defined.** A register at `F` overflows when the absolute value of
-`C` reaches `2^(F+31)`. This document does not state whether the accumulator wraps or
+`C` reaches `2^(p+47)`. This document does not state whether the accumulator wraps or
 saturates. That is an open decision in section 11, with saturate and count as the
 recommendation, because a wrapped accumulator corrupts the output silently.
 
@@ -380,31 +383,29 @@ the largest term instead of above the smallest one.
 
 ### 5.7 Layer accumulator width
 
-The width answers two different questions, and the answers must not be added
-together. The first question is about the sum. The second is about the single
-binary point of the register.
+**Decided: 48 bits, one width for the whole engine.**
 
-**Requirement 1, a sum that cannot overflow.** One term needs the width of a block
-sum times a scale significand, which is a 13-bit `S_b` times an 8-bit significand,
-20 bits of magnitude and 21 with a sign. The sum of `nb` such terms needs
-`ceil(log2(nb))` more bits, or adding could overflow. The rule uses 20 for one term.
+    width = 20 + (max(y) - min(y)) + ceil(log2(nb))
 
-    width = 20 + ceil(log2(nb))      then round up to a multiple of 8
+| piece | what it counts |
+| :--- | :--- |
+| `20` | one term: the 19 magnitude bits of `S_b * x` plus the sign. `x` is the significand of the scale product |
+| `max(y) - min(y)` | the **distance** of the scale window of that layer, in octaves. `y` is the exponent of one term |
+| `ceil(log2(nb))` | the **growth** of a sum of `nb` terms of the same size. `nb` is the number of blocks in the reduction, `K / 16` |
 
-| `nb` | requirement 1 | growth | sum | width |
-| ---: | ---: | ---: | ---: | ---: |
-| 1 | 20 | 0 | 20 | 24 |
-| 8 | 20 | 3 | 23 | 24 |
-| 49 | 20 | 6 | 26 | 32 |
-| 256 | 20 | 8 | 28 | 32 |
-| 1024 | 20 | 10 | 30 | 32 |
-| 8192 | 20 | 13 | 33 | 40 |
+| `nb` | growth | distance that 48 bits covers |
+| ---: | ---: | ---: |
+| 49 | 6 | **22 octaves**, which is 6.6 decades |
+| 256 | 8 | **20 octaves**, which is 6 decades |
 
-**Requirement 2, one binary point that drops no bit.** The register has one binary
-point for all `nb` terms, so its top must hold the largest term and its bottom must
-sit at the finest low bit that any term uses. That width includes the spread of the
-scale products, which requirement 1 does not see at all. Measured by
-`python/width_probe.py` on the test set of each dataset, 10,000 samples for MNIST and 20,000 for MNIST-1D, 1 seed:
+**The two questions stay separate, and their answers must not be added.** The first is
+"can the sum overflow", and the growth term answers it. The second is "does the one
+point drop low bits", and the distance term answers it.
+
+**The evidence for the second question.** The register has one binary point for all
+`nb` terms, so it must reach from the finest low bit that any term uses to the top of
+the largest sum. Measured by `python/width_probe.py` on the test set of each dataset,
+10,000 samples for MNIST and 20,000 for MNIST-1D, 1 seed:
 
 | dataset | format | one term | sum of full terms | one binary point | top bit | finest low bit |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: |
@@ -415,51 +416,53 @@ scale products, which requirement 1 does not see at all. Measured by
 
 **The failure condition is exact and it is short.** A term loses bits if and only if
 its own low bit sits below the register's low bit, which is `span - width` bits for
-the smallest term. A legal tensor can exceed 32: `python/width_probe.py` builds one
-with a span of 40 and one with a span of 51, both from legal scales, and both stay
-above 190 dB of signal to noise ratio, because the bits that are lost sit that many
-octaves below the largest term. The failure is self-limiting. Section 4.5 of
+the smallest term. A legal tensor can exceed any built width: `python/width_probe.py`
+builds one with a span of 40 and one with a span of 51, both from legal scales, and
+both stay above 190 dB of signal to noise ratio, because the bits that are lost sit
+that many octaves below the largest term. The failure is self-limiting. Section 4.5 of
 `datapath.md` gives the one case where it is not, which needs a span above 47 and
 cancellation between two large terms at the same time.
 
-**The worst entry is 32 bits, and 32 is what is built, so on these two datasets the
-register drops no bit and on one of them it has nothing spare.** The table above gives
-the width that drops no bit of any term, and it takes the top of the largest term. The
-register must also hold the largest sum, and with `nb = 49` the sum reaches two octaves
-higher than the largest term. The requirement is therefore
-`top of the largest sum - finest low bit + 1`, which is 28 bits for MNIST layer 1 and
-**32 bits for MNIST-1D layer 1**. A 31-bit register would overflow MNIST-1D.
+**The footprint, and the sum on top of it.** The width that drops no bit of any term
+takes the top of the largest term. The register must also hold the largest sum, and
+with `nb = 49` the sum reaches `ceil(log2 49) = 6` octaves higher. The requirement is
+therefore `top of the largest sum - finest low bit + 1`, which is 28 bits for MNIST
+layer 1 and **32 bits for MNIST-1D layer 1**. A 31-bit register would overflow
+MNIST-1D. These are measurements of the data and they are not the rule.
 
-That is a statement about this data, and it is not a statement about the format. A
-fixed width does hold every legal input, and it is much wider than 32, because the
-largest term and the smallest term of one reduction must share one binary point.
-Enumerating the 255 scale codes, with 12 payload units in all 16 positions of both
-operands and `nb = 49`, the worst legal reduction spans:
+Replacing the top of the largest sum by the bound of one term plus the growth gives the
+rule above. On MNIST-1D layer 1 the footprint is 30 positions, so the data uses about
+`30 - 20 = 10` octaves of distance, and the rule gives `20 + 10 + 6 = 36`. **The built
+48 covers 22 octaves, so it carries 6 octaves of distance beyond the measured need.**
+
+**A fixed width does not cover every legal input, and that is the declared distance
+doing its job.** Enumerating the 255 scale codes, with 12 payload units in all 16
+positions of both operands and `nb = 49`, the worst legal reduction spans:
 
 | case | UE5M3 | UE6M2 |
 | :--- | ---: | ---: |
 | worst value, `nb` maximal terms at the largest scale | 24 bits | 22 bits |
 | worst spread, the same plus one block at the floor of the window | **86 bits** | **148 bits** |
 
-So 32 bits covers 32 of the 86 positions that the worst legal reduction spans, and
-the other 54 are lost. That is what a fixed point does, and `datapath.md` 4.5 gives
-the two conditions under which the loss stops being harmless. On the measured
-tensors the requirement is 28 to 32 bits, because a trained network does not put the
-floor of the window and the top of the window in the same layer: the block maxima of
-one real layer cover 4.5 decades, which is 15 octaves.
+So 48 bits covers 48 of the 86 positions that the worst legal reduction spans, and the
+rest are lost unless the encoder clamps the window. That is what a fixed point does,
+and `datapath.md` 4.5 gives the two conditions under which the loss stops being
+harmless. On the measured tensors the requirement is 28 to 32 bits, because a trained
+network does not put the floor of the window and the top of the window in the same
+layer: the block maxima of one real layer cover 4.5 decades, which is 15 octaves.
 
 Experiment E3 measured the cost of a shortfall: 20 bits gives 103.1 dB and 24 bits
 gives 148.9 dB of layer-1 signal to noise ratio, against about 20 dB of error in the
 operands. A shortfall of a few bits therefore does not reach the result.
 
-**32 bits for this model.** The rule gives 26 and the round to a byte gives 32. The
-round is what covers requirement 2 on the measured data, and it costs three bits
-over requirement 1.
-
-The count is the number of blocks and not the contraction length, so a larger block
+**The count is the number of blocks and not the contraction length**, so a larger block
 size reduces the accumulator. The number of output columns does not change the
-width. It changes the number of accumulator registers: one per output column,
-reused `nb` times each.
+width. It changes the number of accumulator registers: one per output column in a fully
+parallel engine, and one per lane in the 4-lane engine, reused for the other columns.
+
+**Raising the width at run time is impossible.** The fabric cannot grow. A wider
+accumulator is a new bitstream, and the distance and growth allowances inside 48 bits
+are what let one bitstream serve more than one model.
 
 The earlier form of this section was `T_bits + G + ceil(log2 n)`, with T_bits of 20
 for UE5M3 and 18 for UE6M2 and G = 12, which gives 35 to 40 bits. That form keeps
@@ -475,10 +478,10 @@ and it is **loaded as the accumulator's initial value** before the first term.
 There is no decoder and no adder.
 
 Its width is the accumulator width of section 5.7, because it is the initial value
-of that register. It is 32 bits for this model, which is 1,344 bits for the 42 bias
-values against a weight store of 58,509 bits, and that is 2.3 percent of the store.
-Against the FP4 per-value store of 504 bits, the extra is 840 bits, which is 1.4
-percent of the store and 105 bytes.
+of that register. It is 48 bits, which is 2,016 bits for the 42 bias values against a
+weight store of 58,509 bits, and that is 3.4 percent of the store. Against the FP4
+per-value store of 504 bits, the extra is 1,512 bits, which is 2.6 percent of the
+store and 189 bytes.
 
 An FP4 bias store was measured and rejected. One shared scale per layer loses up
 to 1.14 points of accuracy, and one scale per value costs 42 extra scale constants
@@ -492,7 +495,7 @@ The datapath has exactly three error sources.
 | :--- | :--- | :--- | :--- |
 | Payload rounding | 20 percent above one scale unit, 33.3 percent between 0.5 and 1.0, and 100 percent below 0.25 | Every element | The dominant term. The measured whole-tensor error is 9.4 percent RMS |
 | Scale grid rounding | 5.88 percent | Every block | One error per block of 16. |
-| Alignment and flush | One low bit of the fixed point for a term that falls below it, and zero for a term that falls entirely below it | Every block pair | The measured span is 25 bits on MNIST and 30 on MNIST-1D, and the accumulator is 32. Experiment E3-20 reached 103.1 dB of layer-1 signal to noise ratio, which is 80 dB above the error of the operands |
+| Alignment and flush | One low bit of the fixed point for a term that falls below it, and zero for a term that falls entirely below it | Every block pair | The measured footprint is 25 bits on MNIST and 30 on MNIST-1D, and the accumulator is 48. Experiment E3-20 reached 103.1 dB of layer-1 signal to noise ratio, which is 80 dB above the error of the operands |
 | Top-end scale saturation | Not bounded | Every block | A fault term, not a rounding term. |
 
 The fourth line is not a rounding effect. A block whose ideal scale is above the largest scale of the format saturates, and the payload of that block saturates with it. The cost depends on the energy of the block. Experiment E3 shows a case where 2 blocks of 8192 carried 99.99 percent of the error energy.
@@ -661,7 +664,7 @@ E1, E3 and E4 come first. Each one costs less than one day of work and each one 
 0. The structure of the term unit. Decided 2026-10-09. The term unit multiplies by N_w and then by N_x, so `T = (S * N_w) * N_x`. It holds no product table. A ruling was needed because section 5.3 and section 9 of an earlier revision described a 256 by 8 read-only memory for `P = N_w * N_x` and a single stage `T = S * P`, while section 5.4 and `rtl-plan.md` section 3.1 described the two-stage form. The two-stage form is never worse and it is better for UE6M2, and it needs no read-only memory. The computed costs are 4 conditional adders and 0 look-up tables for UE5M3, and 2 adders and 0 look-up tables for UE6M2. The single-stage form is 4 adders and 32 look-up tables for UE5M3, because P reaches 225, and 3 adders and 32 look-up tables for UE6M2. The ruling is recorded in `learn-fpg4/REVIEW.md` item F1.
 1. The bias choice for the scale. The default is 15, which matches the published work. E1 decides. E3 shows that the top of the range is the dangerous end, because the largest values carry the energy.
 2. The scale-selection rule. Decided by E2. The rule is `four6`, which tests the two candidate scales amax/6 and amax/4 and keeps the better one. It gains 0.17 to 2.64 dB against the largest-value rule. Clipping the top of the block is rejected. The test that chooses between the two candidates is the absolute error of the block, not the squared error, and not a saturation test. The absolute error needs no multiplier, and it loses only 0.14 dB against the squared error. The rule doubles the work of the encoder. The area and the clock effect of that doubling are open, and they come from synthesis in experiment E9. If the encoder does not close timing, the fallback is the rule `amax6`, which costs 0.70 dB on the real tensors. The measured values on the real tensors are 21.27 dB for `four6` and 20.57 dB for `amax6`, both from measurement E2 in this project.
-3. The guard-bit budget G. Decided by E5 for the guard-bit form, and superseded for the built datapath. The value is 12 for the standard configuration and 16 for the insurance configuration. The measured spread of the block exponents inside one group is one octave at the median and five octaves in the worst real case, so the measured requirement is 4 to 6. The built datapath uses the fixed binary point of section 5.7 instead: `width = 20 + ceil(log2(nb))` rounded up to a multiple of 8, which is 32 bits for this model. The guard-bit form stays as the insurance bound at 35 to 40 bits.
+3. The guard-bit budget G. Decided by E5 for the guard-bit form, and superseded for the built datapath. The value is 12 for the standard configuration and 16 for the insurance configuration. The measured spread of the block exponents inside one group is one octave at the median and five octaves in the worst real case, so the measured requirement is 4 to 6. The built datapath uses the fixed binary point of section 5.7 instead: `width = 20 + (max(y) - min(y)) + ceil(log2(nb))`, which is 48 bits for the engine. The guard-bit form stays as the insurance bound at 35 to 40 bits.
 4. Stochastic rounding for dY. The default is off. E6 decides.
 5. The tensor reference. The default is none. E1 decides.
 6. The scale configuration. This decision is open until E7. Two positions are defensible, and the hardware supports both. The hardware cost is not the same for the two, and the measurements of this revision change the balance.
@@ -687,6 +690,7 @@ A randomized Hadamard transform is out of scope. It is the answer to one case th
 | 0.4 | 2026-10-09 | The MX paper `arXiv 2310.10537` is added to the prior art of section 3. It states the rule that sets the block axis, and the rule that a transposed tensor changes that axis. Section 6.1 and section 6.2 of `docs/motivation.md` record the two models of a block. |
 | 0.5 | 2026-10-18 | The reserved exponent 31 of UE5M3 is overridden, because its origin is not recorded. Both scales get one NaN at code 255. Neither has a subnormal band or a zero scale. The zero-scale repair rule is replaced. The UE5M3 window changes from 9.91 to 9.58 decades. The UE6M2 window changes from 19.21 to 19.14 decades. Section 4.3 carries the amendment, and the table of the affected sections. |
 | 0.6 | 2026-11-09 | The amendment of 0.5 is applied to the text and the superseded text is removed. Sections 4.3, 4.4 steps 1 and 6, 5.3, 8 and 9 are rewritten to the current rules. Conformance tests 8 and 9 are added, because two places referenced test numbers that the list did not have. The revision number in the header follows the revision history. The rule `four6` is no longer stated as selected, because no measurement separates it from `amax6`. The quantity T of the old top exponent code is removed, because no code is reserved. |
+| 0.13 | 2026-11-09 | The layer accumulator is decided and the stale rule is removed. Section 5.5 states 48 bits. Section 5.6 records two's complement fixed point and the point at `min(y)` of the layer, with a fixed `24.24` for the experiments that is exact on all six layers of the two datasets. Section 5.7 replaces `20 + ceil(log2(nb))` with `20 + (max(y) - min(y)) + ceil(log2(nb))`, which is the rule that has the distance term, and states the 22-octave distance that 48 bits covers at `nb = 49`. Section 5.8 carries the bias from 32 to 48 bits, so 2016 bits and 3.4 percent of the store. Section 6 and section 11 follow. The earlier rule silently assumed that every block of a layer has the same scale. |
 | 0.12 | 2026-11-09 | Section 5.7 now counts the top of the largest SUM and not only the top of the largest term. The requirement is `top of the largest sum - finest low bit + 1`, which is 28 bits for MNIST layer 1 and 32 for MNIST-1D layer 1. The earlier "30 bits, two bits of margin" is withdrawn: at 32 bits MNIST-1D layer 1 has nothing spare. |
 | 0.11 | 2026-11-09 | Section 5.6 is corrected. Revision 0.10 stated a rule `F = ceil(log2(max absolute C)) - 31` for the position of the binary point and treated it as decided. It was never decided. The value came from a script written to run an experiment. The section now records two open decisions: the numeric format of the accumulator, and the position of the point if it is fixed point. The measurements stay as data. |
 | 0.10 | 2026-11-09 | The position of the binary point of the accumulator is now stated for the first time, as a per-layer constant `F = ceil(log2(max absolute C)) - 31`, with the measured `F` of all six layer and dataset pairs. Section 5.6 also states that overflow behaviour is not defined and is an open decision. |
