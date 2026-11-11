@@ -196,11 +196,108 @@ table of 4 bits, 4 LUT6) and 3 bits by 3 bits for UE5M3 (a 64-entry table of 6
 bits, 6 LUT6). The rest is shifts and adds. So the whole `P` unit is about
 **20 LUT6**, with no DSP and no multiplier block. Section 9 writes it out.
 
-| format | significand | exponent | `P` exact |
-|---|---|---|---|
-| UE6M2 | 6 | 7 | **13 bits** |
-| UE5M3 | 8 | 6 | **14 bits** |
-| both | 8 | 7 | **14 bits covers both without normalizing shift bit** |
+### how two scale bytes become one `P`
+
+**Step 1, what is inside one scale byte.** The two formats field their bytes
+differently, and that is the only difference between them:
+
+| format | byte | exponent field | mantissa field | value of one scale | significand `n` |
+| :--- | :--- | ---: | ---: | :--- | ---: |
+| UE5M3 | `(e << 3) \| m` | 5 bits, `0..31` | 3 bits, `0..7` | `n * 2^(e-15) / 8` | `n = 8 + m`, 4 bits, `8..15` |
+| UE6M2 | `(e << 2) \| m` | 6 bits, `0..63` | 2 bits, `0..3` | `n * 2^(e-31) / 4` | `n = 4 + m`, 3 bits, `4..7` |
+
+The significand is written `n = 2^M + m`, so `n` is the mantissa with its leading
+one restored. `M` is the mantissa bits: 3 for UE5M3, 2 for UE6M2.
+
+**Step 2, multiply two of them.**
+
+```
+s_A * s_W = n_A * n_W * 2^(e_A + e_W - 2*bias) / 2^(2*M)
+          = N * 2^(Y + K0)
+
+    N  = n_A * n_W        the two significands, multiplied
+    Y  = e_A + e_W        the two exponent fields, added
+    K0 = -(2*bias + 2*M)  a constant per format, no logic
+```
+
+**Step 3, the two fields of the 14-bit `P`.**
+
+| format | `N` range | `x = N / 2^(2M)` | fraction bits of `x` | `Y` range | `Y` bits | `K0` |
+| :--- | :--- | :--- | ---: | :--- | ---: | ---: |
+| UE5M3 | 64 to 225 | 1.0 to 3.515625 | 6, so `x` is 2 integer + 6 fraction = **8 bits** | 0 to 62 | **6** | -36 |
+| UE6M2 | 16 to 49 | 1.0 to 3.0625 | 4, so `x` is 2 integer + 4 fraction = **6 bits** | 0 to 126 | 7 | -66 |
+
+So `P` is 14 bits laid out as:
+
+| bits | field | content |
+| :--- | :--- | :--- |
+| 13 to 6 | `x` | `N`, unsigned, with `2M` fraction bits. UE6M2 occupies the low 6 bits and is zero extended to 8 |
+| 5 to 0 | `Y` | `e_A + e_W`, **unsigned** |
+
+And the definition of the value is:
+
+```
+P = x * 2^y        with     y = Y - 30
+```
+
+**Why `Y` is unsigned and not two's complement.** The exponent `y` reaches `+32`,
+because `e_A = e_W = 31` gives `Y = 62` and `62 - 30 = 32`. Six bits of two's
+complement stop at `+31`, so the largest legal exponent would not fit. Storing `Y`
+as an unsigned `0..62` covers every legal value. Nothing is lost by dropping the
+`-30`: it is a constant, so it joins `K0` and becomes part of the alignment shift.
+
+**Verified, not assumed.** The identity was checked over all `255 * 255 = 65,025`
+finite pairs of both formats, in exact arithmetic, against the scale tables of
+`quant.py`. Every pair is exact with no rounding.
+
+**Worked examples, UE5M3.**
+
+| code A | code B | `n_A * n_W` = `N` | `x = N/64` | `Y` | `y = Y-30` | `P = x * 2^y` |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 120, which is 1.0 | 120, which is 1.0 | 64 | 1.0 | 30 | 0 | **1.0** |
+| 0, which is `2^-15` | 0, which is `2^-15` | 64 | 1.0 | 0 | -30 | **9.31323e-10** |
+| 254, which is `1.75*2^16` | 0, which is `2^-15` | 112 | 1.75 | 31 | 1 | **3.5** |
+| 254 | 254 | 196 | 3.0625 | 62 | 32 | **1.31533e10** |
+| 120 | 254 | 112 | 1.75 | 46 | 16 | **114688** |
+
+**Two measured facts that the tables do not show.**
+
+1. `x` takes **35 distinct values** for UE5M3, not 162, because the products
+   `n_A * n_W` of two numbers in `8..15` coincide often.
+2. The ratio of the largest `P` to the smallest is **`2^63.61`** for UE5M3 and
+   **`2^127.17`** for UE6M2. The naive value, the largest `x` times the largest
+   `2^y`, gives `2^63.81` and `2^127.6`, and **it is not reachable**: the largest
+   significand needs `m = 7`, and `m = 7` with `e = 31` is exactly code 255, which
+   is NaN. So the largest significand and the largest exponent can never be in the
+   same code, in either operand. This document used to state the naive ratio.
+
+**`x` in logic, for UE5M3.** Expand the product of the significands:
+
+```
+N = (8 + m_A) * (8 + m_W) = 64 + 8*(m_A + m_W) + m_A*m_W
+```
+
+| piece | operation | cost, estimate |
+| :--- | :--- | :--- |
+| `m_A + m_W` | two 3-bit numbers, a 4-bit sum | 2 LUT6 |
+| `m_A * m_W` | two 3-bit numbers, a 6-bit product, a 64-entry table | 6 LUT6 |
+| `8 * (m_A + m_W)` | a shift by 3 | 0 LUT6 |
+| add both, plus the constant 64 | one 9-bit add | about 9 LUT6 |
+| **total** | | **about 17 LUT6** |
+
+For UE6M2 the same four pieces are 2 bits wide, so the multiply is a 16-entry
+table of 4 bits and the total is **about 12 LUT6**, estimate.
+
+**`Y` in logic.** `e_A + e_W`, an adder and nothing else: two 5-bit numbers give a
+6-bit sum, **5 LUT6** for UE5M3, and two 6-bit numbers give a 7-bit sum, **6 LUT6**
+for UE6M2, estimate.
+
+**`K0` in logic: nothing at all.** The shift that the accumulator applies is
+`Y + K0 + (the constant that the accumulator's point contributes)`. All three terms
+are constants except `Y`, so they fold into one adder constant. **The choice
+between UE5M3 and UE6M2 therefore moves one constant by 30 and changes no logic.**
+That is the reason a single 14-bit `P` register can serve either format while the
+format decision is open.
 
 Question by Dzemo: 15 bits or 14 bits? Why not have normalization? Seems very logical to have it. Is it integrated in the S*P calculation (the calculation doesn't need it normalized?)
 
@@ -239,8 +336,10 @@ Question by Dzemo: The guard bit is not needed why exactly? This is tied to my l
 With no right shift, there is nothing to guard.** The guard bit is the 15th bit.
 It is only needed when the significand must be shifted to become normalised, and
 that shift is a rounding event. No normalisation, no shift, no rounding event, so
-`P` stays at 14 bits: 2 integer, 8 significand, 7 exponent. The sign is 0 bits
-because both scales are unsigned.
+`P` stays at 14 bits. It is an 8-bit significand plus a 6-bit exponent for UE5M3.
+Of those 8 significand bits, the top 2 are integer, so 6 are fraction, and
+`8 + 6 = 14`. For UE6M2 it is a 6-bit significand plus a 7-bit exponent. The sign is
+0 bits because both scales are unsigned.
 ### 4.5 Stage 5, the term and the layer accumulator
 
 ```
@@ -354,8 +453,11 @@ The same two numbers for UE6M2 are 22 and 148 bits.
 **The largest value is not the worst case. The worst case is the largest value and the
 smallest value in the same reduction.** A register must hold both at one binary point,
 so the width it needs is driven by the RATIO between those two terms and not by the size
-of either. `P` is a product of two scales, so the format permits a ratio of 63.8 octaves
-for UE5M3 and 127.6 for UE6M2, and 63.8 octaves plus an 18-bit term is the 86.
+of either. `P` is a product of two scales, so the format permits a ratio of 63.6 octaves
+for UE5M3 and 127.2 for UE6M2, and 63.6 octaves plus an 18-bit term is the 86. The
+naive figure, the largest significand times the largest exponent, is 63.8 and 127.6,
+and it is unreachable, because the largest significand sits in a code that cannot
+also hold the largest exponent. Section 4.4 shows why.
 
 **So the rule covers the value and not the spread.** `20 + ceil(log2(nb))` was
 calibrated on the value case, which needs 24 bits here, and 26 after the byte round is
