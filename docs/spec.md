@@ -423,10 +423,25 @@ octaves below the largest term. The failure is self-limiting. Section 4.5 of
 cancellation between two large terms at the same time.
 
 **The worst entry is 30 bits and the built accumulator is 32, so on these two
-datasets the register drops no bit.** The two bits are the whole margin, and they
-are a bet on the data, because requirement 2 is not bounded. `P` is a product of two
-scales, so the format permits a ratio of 63.6 octaves for UE5M3 and 127.2 for UE6M2
-between the largest and the smallest term, and no fixed width holds every input.
+datasets the register drops no bit.** That is a statement about this data, and it is
+not a statement about the format. A fixed width does hold every legal input, and it
+is much wider than 32, because the largest term and the smallest term of one
+reduction must share one binary point. Enumerating the 255 scale codes, with 12
+payload units in all 16 positions of both operands and `nb = 49`, the worst legal
+reduction spans:
+
+| case | UE5M3 | UE6M2 |
+| :--- | ---: | ---: |
+| worst value, `nb` maximal terms at the largest scale | 24 bits | 22 bits |
+| worst spread, the same plus one block at the floor of the window | **86 bits** | **148 bits** |
+
+So 32 bits covers 32 of the 86 positions that the worst legal reduction spans, and
+the other 54 are lost. That is what a fixed point does, and `datapath.md` 4.5 gives
+the two conditions under which the loss stops being harmless. On the measured
+tensors the span is 25 to 30 bits, because a trained network does not put the floor
+of the window and the top of the window in the same layer: the block maxima of one
+real layer cover 4.5 decades, which is 15 octaves.
+
 Experiment E3 measured the cost of a shortfall: 20 bits gives 103.1 dB and 24 bits
 gives 148.9 dB of layer-1 signal to noise ratio, against about 20 dB of error in the
 operands. A shortfall of a few bits therefore does not reach the result.

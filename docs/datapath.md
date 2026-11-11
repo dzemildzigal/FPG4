@@ -292,26 +292,38 @@ table of 4 bits and the total is **about 12 LUT6**, estimate.
 6-bit sum, **5 LUT6** for UE5M3, and two 6-bit numbers give a 7-bit sum, **6 LUT6**
 for UE6M2, estimate.
 
-**A 14-bit `P` cannot hold both formats at one field layout.** The two splits are
-`8 + 6 = 14` for UE5M3 and `6 + 7 = 13` for UE6M2. The union of the two fields is
-`8 + 7 = 15`, because the 8-bit significand is a UE5M3 requirement and the 7-bit
-exponent is a UE6M2 requirement. So "pad UE6M2 to 14" is not a layout, it is only a
-width. If one hard `P` register must serve either format, it is **15 bits**, or the
-field placement follows the format and the register is 14 bits with the fields
-placed differently. Nothing is spent yet: this is a choice for when the format is
-decided.
+**A 14-bit `P` serves both formats, because 14 is the larger of the two splits.**
+There is no hybrid. A `P` is the product of two scales of **one** format, so it is
+never 8 significand bits and 7 exponent bits at the same time. Two cases only:
 
-**No field has a spare bit.** The exponent field has 7 bits and the largest legal
-sum is 126, so the code 127 is unused, which is one code and not one bit of range.
-The significand field has 8 bits and the largest product of two significands is
-`15 * 15 = 225`, so `225` needs the whole field. The 6-bit figure is `m_A * m_W`,
-the mantissa product alone, and that is only one of the three terms of `N`:
+| build | significand `N` needs | exponent `Y` needs | total | inside a 14-bit `P` |
+| :--- | ---: | ---: | ---: | :--- |
+| UE5M3 | 8, because `15 * 15 = 225` | 6, because `31 + 31 = 62` | **14** | **0 spare bits** |
+| UE6M2 | 6, because `7 * 7 = 49` | 7, because `63 + 63 = 126` | **13** | **1 spare bit** |
+
+The two fields are never both at their widest in the same build, and the register is
+14 bits wide in both. UE5M3 fills all 14 bits. UE6M2 uses 13 and leaves one unused.
+The field placement follows the format: in a UE5M3 build the significand is bits 13
+to 6 and the exponent is bits 5 to 0, and in a UE6M2 build the significand is the low
+6 bits zero extended and the exponent is 7 bits.
+
+**The one code that no value uses.** In a UE5M3 build the exponent field is 6 bits
+and the largest legal sum is 62, so the code 63 is unused. In a UE6M2 build the field
+is 7 bits and the largest legal sum is 126, so the code 127 is unused. That is one
+code in each build and not one bit of range. The significand field of UE5M3 has no
+such code: `225` needs all 8 bits, and `255 - 225 = 30` unused codes is 0.13 of a bit.
+
+**The 6-bit product that looks like a spare significand is `m_A * m_W`, not `N`.**
+The mantissa product is 3 bits by 3 bits and reaches 49. It is one of three terms:
 
 ```
 N = 64 + 8*(m_A + m_W) + m_A*m_W     for UE5M3, m_A = m_W = 7 gives 225 = 11100001
 ```
 
-`K0` in logic: nothing at all.** The shift that the accumulator applies is
+The leading `64` is the two restored ones, `1.xxx` times `1.xxx`, and it is what
+pushes the significand from 6 bits to 8.
+
+**`K0` in logic: nothing at all.** The shift that the accumulator applies is
 `Y + K0 + (the constant that the accumulator's point contributes)`. All three terms
 are constants except `Y`, so they fold into one adder constant. **The choice
 between UE5M3 and UE6M2 therefore moves one constant by 30 and changes no logic.**
