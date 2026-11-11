@@ -292,7 +292,26 @@ table of 4 bits and the total is **about 12 LUT6**, estimate.
 6-bit sum, **5 LUT6** for UE5M3, and two 6-bit numbers give a 7-bit sum, **6 LUT6**
 for UE6M2, estimate.
 
-**`K0` in logic: nothing at all.** The shift that the accumulator applies is
+**A 14-bit `P` cannot hold both formats at one field layout.** The two splits are
+`8 + 6 = 14` for UE5M3 and `6 + 7 = 13` for UE6M2. The union of the two fields is
+`8 + 7 = 15`, because the 8-bit significand is a UE5M3 requirement and the 7-bit
+exponent is a UE6M2 requirement. So "pad UE6M2 to 14" is not a layout, it is only a
+width. If one hard `P` register must serve either format, it is **15 bits**, or the
+field placement follows the format and the register is 14 bits with the fields
+placed differently. Nothing is spent yet: this is a choice for when the format is
+decided.
+
+**No field has a spare bit.** The exponent field has 7 bits and the largest legal
+sum is 126, so the code 127 is unused, which is one code and not one bit of range.
+The significand field has 8 bits and the largest product of two significands is
+`15 * 15 = 225`, so `225` needs the whole field. The 6-bit figure is `m_A * m_W`,
+the mantissa product alone, and that is only one of the three terms of `N`:
+
+```
+N = 64 + 8*(m_A + m_W) + m_A*m_W     for UE5M3, m_A = m_W = 7 gives 225 = 11100001
+```
+
+`K0` in logic: nothing at all.** The shift that the accumulator applies is
 `Y + K0 + (the constant that the accumulator's point contributes)`. All three terms
 are constants except `Y`, so they fold into one adder constant. **The choice
 between UE5M3 and UE6M2 therefore moves one constant by 30 and changes no logic.**
