@@ -263,3 +263,100 @@ Seed 123 is the reason the `L1a` mean is below every `ptq` column. Measured on t
 ### Not yet run
 
 MNIST-1D. It is 2.5 times more sensitive to the same quantization (L1: 1.7 to 2.4 points against 1.5 to 1.9), so it is where the four configurations separate, if they separate at all.
+
+### MNIST-1D
+
+Same conditions: 10 seeds, float32, full 100,000-sample test set, 10 epochs, batch 128, dataset seed 42. Script `python/l2_sweep.py mnist1d`. One epoch is 3,125 steps here, not 469.
+
+Accuracy, percent, full test set:
+
+|seed|L0|L1a|a6-e6m2 ptq|f6-e6m2 ptq|a6-e5m3 ptq|f6-e5m3 ptq|
+|-|-:|-:|-:|-:|-:|-:|
+|42|64.89|55.21|58.75|60.59|57.89|57.50|
+|4242|64.75|57.46|57.98|60.30|57.10|56.14|
+|424242|65.17|50.42|53.57|54.98|51.54|51.65|
+|123|64.44|58.42|58.14|59.21|57.02|58.70|
+|456|64.86|58.64|51.73|52.73|58.85|56.09|
+|789|64.43|58.52|48.00|49.60|55.99|54.59|
+|1010|65.33|47.94|55.34|55.21|52.81|54.09|
+|2020|65.12|61.62|48.06|51.46|60.40|59.87|
+|3030|66.33|60.58|59.17|58.89|51.81|61.94|
+|4040|64.45|58.86|58.82|58.89|59.36|59.54|
+|**mean**|**64.98**|**56.77**|**54.96**|**56.19**|**56.28**|**57.01**|
+
+L2, same seeds and same columns:
+
+|seed|a6-e6m2|f6-e6m2|a6-e5m3|f6-e5m3|
+|-|-:|-:|-:|-:|
+|42|64.40|63.69|63.87|63.89|
+|4242|63.63|64.07|63.60|64.02|
+|424242|63.83|65.14|65.03|65.17|
+|123|63.92|64.53|62.12|62.62|
+|456|63.70|62.31|62.96|63.07|
+|789|63.89|64.41|63.31|63.30|
+|1010|62.77|62.30|62.81|63.97|
+|2020|64.52|64.43|65.09|65.20|
+|3030|63.38|64.42|63.80|64.93|
+|4040|63.69|64.65|63.70|64.26|
+|**mean**|**63.77**|**64.00**|**63.63**|**64.05**|
+
+Drop against L0, in points:
+
+|configuration|L1a drop|ptq drop|L2 drop|training recovers|
+|-|-:|-:|-:|-:|
+|a6-e6m2|8.21|10.02|1.20|8.82|
+|f6-e6m2|8.21|8.79|0.98|7.81|
+|a6-e5m3|8.21|8.70|1.35|7.35|
+|f6-e5m3|8.21|7.97|0.93|7.03|
+
+End of training, mean over the 10 seeds. `frozen steps` counts an epoch of 3,125 steps:
+
+|configuration|SQNR W1|SQNR W2|SQNR W3|stale W1|stale W2|stale W3|frozen steps|
+|-|-:|-:|-:|-:|-:|-:|-:|
+|a6-e6m2|19.79|18.05|18.55|98.17%|97.65%|97.90%|552.2|
+|f6-e6m2|20.75|19.05|19.21|97.11%|95.70%|95.27%|797.1|
+|a6-e5m3|20.00|18.06|18.56|97.47%|97.80%|97.81%|513.9|
+|f6-e5m3|20.90|19.23|19.39|96.34%|95.92%|95.81%|869.7|
+
+The four scale counters, summed over every epoch of every seed and every configuration: `scale_saturated` 0, `scale_underflow` 0, `zero_blocks` 0, `nonfinite_blocks` 0. Same as MNIST.
+
+The decision rule, applied to every pair:
+
+|a|b|mean a-b|standard error|sign agrees|condition 1|condition 2|winner|
+|-|-|-:|-:|-:|-:|-:|-|
+|L2 a6-e6m2|L0|-1.20|0.28|10/10|yes|yes|**L0**|
+|L2 f6-e6m2|L0|-0.98|0.37|8/10|yes|yes|**L0**|
+|L2 a6-e5m3|L0|-1.35|0.29|10/10|yes|yes|**L0**|
+|L2 f6-e5m3|L0|-0.93|0.22|8/10|yes|yes|**L0**|
+|L2 a6-e6m2|ptq a6-e6m2|+8.82|1.45|10/10|yes|yes|**L2**|
+|L2 f6-e6m2|ptq f6-e6m2|+7.81|1.24|10/10|yes|yes|**L2**|
+|L2 a6-e5m3|ptq a6-e5m3|+7.35|1.06|10/10|yes|yes|**L2**|
+|L2 f6-e5m3|ptq f6-e5m3|+7.03|0.99|10/10|yes|yes|**L2**|
+|L2 a6-e6m2|L2 f6-e6m2|-0.22|0.27|6/10|no|no|no decision|
+|L2 a6-e5m3|L2 f6-e5m3|-0.42|0.14|9/10|yes|yes|**four6**|
+|L2 a6-e6m2|L2 a6-e5m3|+0.15|0.26|5/10|no|no|no decision|
+|L2 f6-e6m2|L2 f6-e5m3|-0.05|0.32|6/10|no|no|no decision|
+
+### What the two datasets say together
+
+The decision rule requires both conditions on **both** datasets, so a row is decided only when MNIST and MNIST-1D agree.
+
+|question|MNIST|MNIST-1D|verdict|
+|-|-|-|-|
+|does weight-only FP4 QAT cost accuracy|0.42 to 0.84 points, all four decided|0.93 to 1.35 points, all four decided|**yes, it costs accuracy. Small on both**|
+|does training recover what PTQ lost|1.01 to 1.60 of 1.46 to 2.44|7.03 to 8.82 of 7.97 to 10.02|**yes, and most of it**|
+|is `four6` better than `amax/6` in UE5M3|**+0.42, decided**|**+0.42, decided**|**yes. The same size on both datasets**|
+|is `four6` better than `amax/6` in UE6M2|+0.11, no decision|+0.22, no decision|**no decision**|
+|does the format matter under `amax/6`|+0.28, no decision|+0.15, no decision|**no decision**|
+|does the format matter under `four6`|-0.03, no decision|-0.05, no decision|**no decision**|
+
+**L2's verdict is one line: `four6` wins in UE5M3, nothing else is decided, and weight-only FP4 QAT costs under 1.4 points on both datasets.**
+
+### The two results that were not in the plan
+
+1. **The `four6` advantage is the same size on both datasets, 0.42 points, and it is decided on both.** MNIST-1D is 2.5 times more sensitive to weight quantization than MNIST (ptq drop 7.97 to 10.02 against 1.46 to 2.44), and yet the gap between the two rules does not grow with the sensitivity. That is the strongest single result of L2, and it is the first result in this project that survives a change of dataset.
+2. **`four6` is the configuration with the most frozen weights, not the fewest.** 869.7 of 3,125 steps frozen on MNIST-1D against 513.9 for `a6-e5m3`, and 337.0 of 469 on MNIST against 302.7. So the rule that quantizes better also tracks the master less. **Accuracy and staleness point in opposite directions.** That is a direct argument for rung L7 and it was not predicted.
+
+### Consequence for the RTL
+
+`four6` stays. Section 4.8 of `docs/datapath.md` costs it as a second scale snap and a second payload pass, close to twice the encoder. The simulation did not drop it, it promoted it, and it did so in the format that was already cheapest to compute: UE5M3 has 8 codes per octave and a 6-bit exponent, so the second snap is 35 LUT6 and not a second divider.
