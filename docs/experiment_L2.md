@@ -149,3 +149,117 @@ Results go in `docs/experiment_L2.md`, section "Results", with the same table sh
 1. **Activations.** Option A (weights only in L2, activation quantization as a separate step) or Option B (8 crossed configs). See "What L2 does not quantize".
 2. **Test set or validation split.** Step 7 uses "a test set", like L0 and L1. That keeps the numbers comparable, but the winner is then selected on the test set. A validation split out of train (for example 10% of the 400,000 MNIST-1D samples) would remove the selection bias but breaks comparability with L0 and L1. Recommendation: keep the test set for L2 and state the bias in the results.
 3. **The cheap activation check.** Before any retraining, L1 can be rerun with quantized activations (no training, a few minutes). That gives the weight-only against weight+activation gap at inference, for the 4 configs, at the cost of one script. Recommendation: do it, it is the cheapest data we can get on the format question.
+
+## Results
+
+### MNIST
+
+Conditions: 10 seeds, float32 (`train.DTYPE`), full test set, 10 epochs, batch 128, dataset seed 42, 784-16-16-10. Script `python/l2_sweep.py mnist`. Every run is resumable in `out/l2/mnist/`.
+
+Three rungs sit under L0 and they are different, so the column means are labelled:
+
+| rung | what it is | needs training |
+|-|-|-|
+| `L0` | no quantization | yes, and it is the same run as rung L0 |
+| `L1a` | FP4 payload with a float64 scale. The scale is exact, so this rung has no 8-bit scale at all | no, it shares the L0 weights |
+| `ptq` | FP4 payload with the configuration's own 8-bit scale. This is rung L1b or L1c | no, it shares the L0 weights |
+| `L2` | the same quantization, but the forward pass sees it during training. Option A: weights only | yes, a new run per configuration and seed |
+
+`ptq` is the like-for-like reference for `L2`. `L1a` is the rung above it and it is shown so the ladder has no gap.
+
+Accuracy, percent, full test set:
+
+|seed|L0|L1a|a6-e6m2 ptq|f6-e6m2 ptq|a6-e5m3 ptq|f6-e5m3 ptq|
+|-|-:|-:|-:|-:|-:|-:|
+|42|94.71|92.42|91.21|90.82|91.51|90.69|
+|4242|95.41|94.73|94.30|94.88|94.33|93.76|
+|424242|95.42|94.48|94.73|94.86|94.78|94.87|
+|123|94.89|89.01|93.12|92.56|91.21|94.07|
+|456|94.79|91.78|92.26|92.96|92.06|91.42|
+|789|94.66|92.28|92.60|92.83|91.49|92.51|
+|1010|95.18|92.04|93.38|94.23|91.56|92.94|
+|2020|95.37|94.67|94.08|94.83|94.90|94.18|
+|3030|94.75|92.90|93.28|93.14|92.49|94.02|
+|4040|94.95|92.15|93.52|94.38|91.40|93.11|
+|**mean**|**95.01**|**92.65**|**93.25**|**93.55**|**92.57**|**93.16**|
+
+L2, same seeds and same columns:
+
+|seed|a6-e6m2|f6-e6m2|a6-e5m3|f6-e5m3|
+|-|-:|-:|-:|-:|
+|42|94.80|94.62|94.58|94.35|
+|4242|94.42|94.71|92.89|94.49|
+|424242|94.93|94.05|94.69|94.94|
+|123|94.32|94.28|93.82|94.51|
+|456|93.76|94.21|93.25|93.78|
+|789|94.71|94.63|94.25|94.46|
+|1010|94.27|95.08|94.78|94.57|
+|2020|94.75|94.54|94.33|95.24|
+|3030|94.04|94.97|94.44|94.85|
+|4040|94.56|94.54|94.74|94.75|
+|**mean**|**94.46**|**94.56**|**94.18**|**94.59**|
+
+Drop against L0, in points. A smaller number is better:
+
+|configuration|L1a drop|ptq drop|L2 drop|training recovers|
+|-|-:|-:|-:|-:|
+|a6-e6m2|2.37|1.77|0.56|1.21|
+|f6-e6m2|2.37|1.46|0.45|1.01|
+|a6-e5m3|2.37|2.44|0.84|1.60|
+|f6-e5m3|2.37|1.86|0.42|1.44|
+
+### What training does to the grid
+
+End of training, mean over the 10 seeds. `stale` is the fraction of weight elements whose FP4 value did not move from one training step to the next, while the master weight was free to move. `frozen steps` counts the steps, of 469 in an epoch, in which the whole quantized matrix was bit-identical to the step before.
+
+|configuration|SQNR W1|SQNR W2|SQNR W3|stale W1|stale W2|stale W3|frozen steps|
+|-|-:|-:|-:|-:|-:|-:|-:|
+|a6-e6m2|19.90|19.00|18.80|99.25%|98.97%|98.96%|300.6|
+|f6-e6m2|20.64|19.92|19.95|98.61%|98.00%|97.74%|353.3|
+|a6-e5m3|20.11|19.47|19.13|98.99%|99.07%|98.88%|302.7|
+|f6-e5m3|20.83|20.08|19.94|98.29%|97.95%|97.83%|337.0|
+
+The four scale counters, summed over every epoch of every seed and every configuration: `scale_saturated` 0, `scale_underflow` 0, `zero_blocks` 0, `nonfinite_blocks` 0. Weight bytes do not stress an 8-bit scale, exactly as the L1 counters predicted.
+
+### The decision rule, applied to every pair
+
+|a|b|mean a-b|standard error|sign agrees|condition 1|condition 2|winner|
+|-|-|-:|-:|-:|-:|-:|-|
+|L2 a6-e6m2|L0|-0.56|0.12|8/10|yes|yes|**L0**|
+|L2 f6-e6m2|L0|-0.45|0.15|9/10|yes|yes|**L0**|
+|L2 a6-e5m3|L0|-0.84|0.24|10/10|yes|yes|**L0**|
+|L2 f6-e5m3|L0|-0.42|0.11|9/10|yes|yes|**L0**|
+|L2 a6-e6m2|ptq a6-e6m2|+1.21|0.32|10/10|yes|yes|**L2**|
+|L2 f6-e5m3|ptq f6-e5m3|+1.44|0.33|10/10|yes|yes|**L2**|
+|L2 f6-e6m2|ptq f6-e6m2|+1.01|0.43|7/10|no|yes|no decision|
+|L2 a6-e5m3|ptq a6-e5m3|+1.60|0.55|7/10|no|yes|no decision|
+|L2 a6-e6m2|L2 f6-e6m2|-0.11|0.17|4/10|no|no|no decision|
+|L2 a6-e5m3|L2 f6-e5m3|-0.42|0.18|8/10|yes|yes|**four6**|
+|L2 a6-e6m2|L2 a6-e5m3|+0.28|0.18|7/10|no|no|no decision|
+|L2 f6-e6m2|L2 f6-e5m3|-0.03|0.15|4/10|no|no|no decision|
+
+### Findings
+
+1. **Weight-only FP4 QAT costs 0.42 to 0.84 points on MNIST, and that cost is real.** All four configurations are below L0 with both conditions of the rule satisfied. Training recovers 1.01 to 1.60 points of the 1.46 to 2.44 that PTQ lost.
+2. **`four6` beats `amax/6` in UE5M3 by 0.42 points**, decided, 8 of 10 seeds, 94.59 against 94.18. In UE6M2 the sign is the same, 94.56 against 94.46, but the rule gives no decision.
+3. **MNIST does not separate the two formats.** e6m2 against e5m3 under `amax/6` gives +0.28 with 7 of 10 signs and under `four6` gives -0.03 with 4 of 10. Both are no decision.
+4. **The best configuration is `f6-e5m3` at 94.59**, then `f6-e6m2` 94.56, `a6-e6m2` 94.46, `a6-e5m3` 94.18. The spread across the four is 0.41 points, which is smaller than the seed spread of one configuration.
+5. **The training problem is visible for the first time.** 98 to 99 percent of the weight elements do not move their FP4 value from one step to the next, and 300 to 353 of 469 steps have the whole quantized matrix frozen while the master keeps moving. The optimizer spends most of its work on values the fabric cannot see. This is the number L3 and L7 have to move.
+6. **The counters are all zero**, so L2 cannot separate the formats on range either. The separation has to come from gradients at L3 and L4, and from optimizer state at L6.
+7. **The pre-registered hypotheses.** 1, L2 beats ptq: confirmed for two configurations and undecided for two. 2, `four6`'s SQNR advantage converts into accuracy: confirmed in UE5M3, undecided in UE6M2. 3, the formats stay within noise of each other: confirmed on MNIST.
+
+### One anomaly, recorded and not explained
+
+Seed 123 is the reason the `L1a` mean is below every `ptq` column. Measured on that seed:
+
+|rung|accuracy|pooled SQNR|SQNR W1|
+|-|-:|-:|-:|
+|`L1a`, float64 scale|89.01|20.300|20.455|
+|`a6-e5m3`|91.21|20.200|20.321|
+|`a6-e6m2`|93.12|20.042|20.099|
+
+`L1a` and the two `ptq` rows differ only in whether the scale is snapped to the 8-bit grid. On this seed the accuracy moves by 4.11 points while the pooled SQNR moves by 0.26 dB, and the accuracy runs **opposite** to the SQNR: the best SQNR gives the worst accuracy. So on this seed the accuracy follows the direction of the weight error, not its size. Not investigated. It is a warning that a single seed's PTQ number is not a measurement of a rule.
+
+### Not yet run
+
+MNIST-1D. It is 2.5 times more sensitive to the same quantization (L1: 1.7 to 2.4 points against 1.5 to 1.9), so it is where the four configurations separate, if they separate at all.

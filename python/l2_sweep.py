@@ -11,9 +11,14 @@ What it does, in this order, for the chosen dataset:
     1. make sure the ten L0 weight files exist. Train any that are missing and save them.
        This is the same float64 run as rung L0, nothing new.
     2. L0 row    evaluate the saved float weights.
-    3. L1a row   quantize those weights once and evaluate. This is rung L1a, the PTQ
-                 reference. It needs no training, because L1a and L0 share the same weights.
-    4. L2 rows   train the network again with quantization inside the forward pass,
+    3. L1a row   the FP4 payload with a float64 scale, no 8-bit scale. One column, the same
+                 for every configuration, because the configuration lives in the scale.
+    4. PTQ rows  quantize those weights once with the configuration's own 8-bit scale and
+                 evaluate. This is rung L1b or L1c, and it is the like-for-like reference for
+                 L2: same format, same scale rule, the only difference is that training did
+                 not see the grid. Neither PTQ row needs training, because PTQ and L0 share
+                 the same weights.
+    5. L2 rows   train the network again with quantization inside the forward pass,
                  once per configuration and seed.
 
 Every L2 run is written to out/l2/<dataset>/l2_<config>_seed<seed>.json as soon as it
@@ -152,38 +157,46 @@ def main():
     print(f"dataset {DATASET}: test set {X_test.shape}, {len(seeds)} seeds, "
           f"{len(CONFIG_NAMES)} configurations", flush=True)
 
-    l0, l1a, l2 = {}, {}, {c: {} for c in CONFIG_NAMES}
+    l0, l1a, ptq, l2 = {}, {}, {}, {c: {} for c in CONFIG_NAMES}
     for seed in seeds:
         p = ensure_l0(seed, data)
         l0[seed] = evaluate_params(p, X_test, y_test)
+        # L1a: FP4 payload, float64 scale. One row, no configuration.
+        p_l1a = dict(p)
+        for key in qat.WEIGHTS:
+            p_l1a[key], _, _, _ = q.quantize_fp4_b_fp64(p[key])
+        l1a[seed] = evaluate_params(p_l1a, X_test, y_test)
         for config in CONFIG_NAMES:
             table, rule = qat.CONFIGS[config]
             pq, _, _ = qat.quantize_master(p, table, rule)
-            l1a[(config, seed)] = evaluate_params(pq, X_test, y_test)
+            ptq[(config, seed)] = evaluate_params(pq, X_test, y_test)
             l2[config][seed] = run_l2(seed, config, data, X_test, y_test)
 
     # ---- table 1: accuracy per seed, the raw evidence -------------------------------------
-    print("\naccuracy, percent, test set")
-    head = f"{'seed':>7} {'L0':>7} " + " ".join(f"{c:>9}" for c in CONFIG_NAMES)
-    print(head)
-    print(f"{'':>7} {'':>7} " + " ".join(f"{'L1a':>9}" for _ in CONFIG_NAMES))
+    print("\naccuracy, percent, test set. Every row below L0 is a rung of the ladder.")
+    print(f"{'seed':>7} {'L0':>7} {'L1a':>7} " + " ".join(f"{c:>9}" for c in CONFIG_NAMES))
+    print(f"{'':>7} {'':>7} {'':>7} " + " ".join(f"{'ptq':>9}" for _ in CONFIG_NAMES))
+    print(f"{'':>7} {'':>7} {'':>7} " + " ".join(f"{'L2':>9}" for _ in CONFIG_NAMES))
     for seed in seeds:
-        row = f"{seed:>7} {l0[seed][1]:>7.2f} " + " ".join(f"{l1a[(c, seed)][1]:>9.2f}" for c in CONFIG_NAMES)
-        print(row)
-        print(f"{'L2':>7} {'':>7} " + " ".join(f"{l2[c][seed]['test_acc'][-1]:>9.2f}" for c in CONFIG_NAMES))
+        print(f"{seed:>7} {l0[seed][1]:>7.2f} {l1a[seed][1]:>7.2f} "
+              + " ".join(f"{ptq[(c, seed)][1]:>9.2f}" for c in CONFIG_NAMES))
+        print(f"{'':>7} {'':>7} {'':>7} "
+              + " ".join(f"{l2[c][seed]['test_acc'][-1]:>9.2f}" for c in CONFIG_NAMES))
     print(f"{'mean':>7} {np.mean([l0[s][1] for s in seeds]):>7.2f} "
-          + " ".join(f"{np.mean([l1a[(c, s)][1] for s in seeds]):>9.2f}" for c in CONFIG_NAMES))
-    print(f"{'L2':>7} {'':>7} " + " ".join(
+          f"{np.mean([l1a[s][1] for s in seeds]):>7.2f} "
+          + " ".join(f"{np.mean([ptq[(c, s)][1] for s in seeds]):>9.2f}" for c in CONFIG_NAMES))
+    print(f"{'L2':>7} {'':>7} {'':>7} " + " ".join(
         f"{np.mean([l2[c][s]['test_acc'][-1] for s in seeds]):>9.2f}" for c in CONFIG_NAMES))
 
     # ---- table 2: what each rung costs, and what training gives back ---------------------
     base = float(np.mean([l0[s][1] for s in seeds]))
+    l1a_drop = base - float(np.mean([l1a[s][1] for s in seeds]))
     print("\ndrop against L0, in points. A smaller number is better.")
-    print(f"{'config':>10} {'L1a drop':>9} {'L2 drop':>9} {'recovered by training':>22}")
+    print(f"{'config':>10} {'L1a drop':>9} {'ptq drop':>9} {'L2 drop':>9} {'training recovers':>18}")
     for c in CONFIG_NAMES:
-        a = base - float(np.mean([l1a[(c, s)][1] for s in seeds]))
-        b = base - float(np.mean([l2[c][s]['test_acc'][-1] for s in seeds]))
-        print(f"{c:>10} {a:>9.2f} {b:>9.2f} {a - b:>22.2f}")
+        a = base - float(np.mean([ptq[(c, s)][1] for s in seeds]))
+        b = base - float(np.mean([l2[c][s]["test_acc"][-1] for s in seeds]))
+        print(f"{c:>10} {l1a_drop:>9.2f} {a:>9.2f} {b:>9.2f} {a - b:>18.2f}")
 
     # ---- table 3: the training-side measurements that L1 could not make -----------------
     print("\nend of training, mean over seeds")
@@ -215,8 +228,8 @@ def main():
     pairs = []
     for c in CONFIG_NAMES:
         pairs.append((f"L2 {c}", "L0", [l2[c][s]["test_acc"][-1] for s in seeds], [l0[s][1] for s in seeds]))
-        pairs.append((f"L2 {c}", f"L1a {c}", [l2[c][s]["test_acc"][-1] for s in seeds],
-                      [l1a[(c, s)][1] for s in seeds]))
+        pairs.append((f"L2 {c}", f"ptq {c}", [l2[c][s]["test_acc"][-1] for s in seeds],
+                      [ptq[(c, s)][1] for s in seeds]))
     for rule, other in (("a6", "f6"), ("f6", "a6")):
         for fmt in ("e6m2", "e5m3"):
             a, b = f"{rule}-{fmt}", f"{other}-{fmt}"
