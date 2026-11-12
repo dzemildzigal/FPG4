@@ -4,6 +4,9 @@ import mnist
 import mnist1d
 import os
 
+# The float width of every run in this project. See python/fp32_probe.py for the measurement against float64.
+DTYPE = np.float32
+
 # name -> (module with get_x_y_train / get_x_y_test, data folder). The name is part of every output file name.
 DATASETS = {
     "mnist": (mnist, "data/mnist"),
@@ -17,9 +20,11 @@ def load_dataset(name):
     X_test, y_test = module.get_x_y_test(path)
     return X_train, y_train, X_test, y_test
 
-def train(seed, epochs, batch_size, X, y, X_test, y_test, tag="mnist"):
+def train(seed, epochs, batch_size, X, y, X_test, y_test, tag="mnist", dtype=DTYPE, save_plot=True):
+    # dtype is the float width of the whole run, see model.init_params. Every number below follows from it.
+    # save_plot=False is for sweeps: 120 identical curves are not evidence, and they cost disk time.
     rng = np.random.default_rng(seed)
-    p = init_params(seed)
+    p = init_params(seed, dtype=dtype)
     m = {k: np.zeros_like(v) for k, v in p.items()}
     v = {k: np.zeros_like(v) for k, v in p.items()}
     t = 1
@@ -50,6 +55,9 @@ def train(seed, epochs, batch_size, X, y, X_test, y_test, tag="mnist"):
         history["test_loss"].append(test_loss)
         history["test_acc"].append(test_acc)
 
+    if not save_plot:
+        return {"params": p, "history": history}
+
     import matplotlib.pyplot as plt
     out_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out")
     os.makedirs(out_dir, exist_ok=True)
@@ -77,9 +85,10 @@ def weights_path(seed, dataset):
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out", f"weights_{dataset}_seed{seed}.npy")
 
 
-def save_weights(seed, dataset, data):
+def save_weights(seed, dataset, data, dtype=DTYPE):
     X_train, y_train, X_test, y_test = data
-    result = train(seed, epochs=10, batch_size=128, X=X_train, y=y_train, X_test=X_test, y_test=y_test, tag=dataset)
+    result = train(seed, epochs=10, batch_size=128, X=X_train, y=y_train, X_test=X_test, y_test=y_test,
+                   tag=dataset, dtype=dtype)
     np.savez(weights_path(seed, dataset), result["params"], **result["params"])
     return result
 

@@ -14,8 +14,14 @@ def softmax(x):
     e_x = np.exp(x - np.max(x, axis=1, keepdims=True))
     return e_x / np.sum(e_x, axis=1, keepdims=True)
 
-def init_params(seed):
+def init_params(seed, dtype=np.float32):
     # Initialize model parameters with the given random seed, return them as a dictionary.
+    # dtype is the float width of the whole simulation. Every other array follows from it: forward() casts
+    # the input to p["W1"].dtype, so the activations, the gradients, the Adam state and the loss all take this
+    # width. float32 is the default because that is what the fabric does, and because python/fp32_probe.py
+    # measured the shift against float64 at +0.00 points on MNIST and -0.17 on MNIST-1D, inside the seed
+    # spread of 0.75 and 0.44. Historical results were float64; run history.md style comparisons only
+    # between runs of the same width.
     rng = np.random.default_rng(seed)
     std1 = np.sqrt(2.0 / 784)  # He initialization
     std2 = np.sqrt(2.0 / 16)
@@ -28,6 +34,8 @@ def init_params(seed):
         "W3": rng.standard_normal((16, 10)) * std3,
         "b3": np.zeros(10)
     }
+    if dtype is not np.float64:
+        params = {k: v.astype(dtype) for k, v in params.items()}
     return params
 
 def forward(p, X, quant=None):

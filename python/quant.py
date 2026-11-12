@@ -1,7 +1,10 @@
 import numpy as np
 
 def sqnr(W, Wq):
-    return 10 * np.log10(np.sum(W**2) / np.sum((W - Wq)**2))
+    err = np.sum((W - Wq)**2)
+    if err == 0:
+        return np.inf  # identical tensors. The limit is infinite, and 0/0 is not an error here.
+    return 10 * np.log10(np.sum(W**2) / err)
 
 # The 8 magnitudes that the 4-bit payload can store. The payload is a sign bit plus the index into this list.
 PAYLOAD_CODES = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])

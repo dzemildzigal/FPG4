@@ -70,6 +70,17 @@ We pull the L0 baseline on MNIST and MNIST1D datasets
 |-|-|-|
 |average|0.1686|0.8834|
 
+### Float width
+
+The baselines above are float64. `python/fp32_probe.py` measured the same three seeds on the same code path in float32, changing nothing else:
+
+|dataset|float64 mean|float32 mean|shift|seed spread of the float64 row|
+|-|-:|-:|-:|-:|
+|MNIST|95.18|95.18|+0.00|0.75|
+|MNIST-1D|65.11|64.94|-0.17|0.44|
+
+The shift is inside the seed spread on both datasets, so **float32 is the width of every run from here on**, and `train.DTYPE` is the one place that sets it. The three float64 rows above stay as history: a float64 row and a float32 row are not comparable, so the `L0` row of the run matrix is retrained in float32 for all ten seeds, and `l2_sweep.py` retrains any weight file whose width does not match instead of averaging the two.
+
 From here we see that MNIST1D is a lot more sensitive than MNIST. That's why we have it included :)
 
 ## Run matrix
