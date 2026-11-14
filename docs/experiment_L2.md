@@ -273,20 +273,27 @@ L2a:
 
 ### What training does to the grid
 
-End of training, mean over the 10 seeds. `stale` is the fraction of weight elements whose FP4 value did not move from one step to the next while the master weight was free to move. `frozen steps` counts the steps, of 469 in an epoch, in which the whole quantized matrix was bit-identical to the step before.
+End of training, mean over the 10 seeds. Two different numbers, and they must not be confused:
 
-|rung|configuration|SQNR W1|stale W1|frozen steps|
-|-|-|-:|-:|-:|
-|L2|a6-e6m2|19.90|99.25%|300.6|
-|L2|f6-e6m2|20.64|98.61%|353.3|
-|L2|a6-e5m3|20.11|98.99%|302.7|
-|L2|f6-e5m3|20.83|98.29%|337.0|
-|L2a|a6-e6m2|19.89|99.33%|255.6|
-|L2a|f6-e6m2|20.63|98.76%|308.1|
-|L2a|a6-e5m3|20.09|99.09%|271.5|
-|L2a|f6-e5m3|20.84|98.44%|309.1|
+| measure | definition | size dependent |
+|-|-|-|
+| `stale` | the fraction of weight elements whose FP4 value did not change from one step to the next, while the master weight was free to move | no. It is a fraction over elements |
+| `frozen steps` | the number of steps in the epoch in which the WHOLE matrix was bit-identical to the step before | **yes.** A matrix of 12,544 elements is much less likely to be fully frozen than a matrix of 160 elements |
 
-**98 to 99 percent of the weight elements never move their FP4 value. `four6` remains the configuration with the most frozen weights.**
+So `frozen steps` is reported per matrix and never summed. `W1` has 12,544 elements and is almost never fully frozen. `W3` has 160 and is fully frozen in 40 percent of the steps. A sum over the three matrices would be a statistic of the small matrices.
+
+One correction to the counts below: an earlier version of this section summed the three matrices into one number and compared it with 469, which is the step count of a single matrix. Every per-matrix count below also carries one artificial freeze per epoch, because the code refreshed its reference tensor at the end of each epoch and then compared it with itself. `qat.py` no longer refreshes it, so new runs are clean. The table subtracts the one artificial count.
+
+MNIST, 469 steps in an epoch:
+
+|rung|configuration|stale W1|stale W2|stale W3|frozen W1|frozen W2|frozen W3|
+|-|-|-:|-:|-:|-:|-:|-:|
+|L2|a6-e5m3|98.99%|99.07%|98.88%|0|120.4|179.3|
+|L2|f6-e5m3|98.29%|97.95%|97.83%|0|128.1|205.9|
+|L2a|a6-e5m3|99.09%|99.03%|98.46%|0|133.1|135.4|
+|L2a|f6-e5m3|98.44%|98.15%|97.54%|0|133.5|172.6|
+
+**98 to 99 percent of the weight elements never move their FP4 value. `four6` remains the configuration with the most frozen weights** on both datasets and both rungs.
 
 ### Activation SQNR, L2a
 
@@ -411,16 +418,12 @@ L2a:
 
 Stale weights and frozen steps, mean over the 10 seeds, 3,125 steps in an epoch:
 
-|rung|configuration|SQNR W1|stale W1|frozen steps|
-|-|-|-:|-:|-:|
-|L2|a6-e6m2|19.79|98.17%|552.2|
-|L2|f6-e6m2|20.75|97.11%|797.1|
-|L2|a6-e5m3|20.00|97.47%|513.9|
-|L2|f6-e5m3|20.90|96.34%|869.7|
-|L2a|a6-e6m2|19.56|98.72%|339.1|
-|L2a|f6-e6m2|20.68|97.78%|618.7|
-|L2a|a6-e5m3|19.76|98.21%|358.0|
-|L2a|f6-e5m3|20.87|97.12%|676.0|
+|rung|configuration|stale W1|stale W2|stale W3|frozen W1|frozen W2|frozen W3|
+|-|-|-:|-:|-:|-:|-:|-:|
+|L2|a6-e5m3|97.47%|97.80%|97.81%|0|110.8|400.1|
+|L2|f6-e5m3|96.34%|95.92%|95.81%|0|203.9|662.8|
+|L2a|a6-e5m3|98.21%|97.68%|97.23%|0|94.4|260.6|
+|L2a|f6-e5m3|97.12%|95.76%|95.10%|0|182.3|490.7|
 
 Activation SQNR, L2a:
 

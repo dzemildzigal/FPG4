@@ -205,7 +205,11 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
             steps += 1
 
         pq, sqnrs, _ = quantize_master(p, table, rule)
-        prev_wq = {k: pq[k].copy() for k in WEIGHTS}
+        # prev_wq is NOT refreshed here on purpose. pq at this point is the same quantized master as the
+        # first comparison of the next epoch would be, so refreshing it would add one self-comparison per
+        # epoch: a step counted as frozen that compared a tensor with itself. Left alone, the first step of
+        # epoch n+1 compares Wq after the last Adam step of epoch n against Wq before it, which is a real
+        # one-step comparison and belongs in the count.
 
         # The reported number is the DEPLOYED model, so it is pq and not the master.
         # pq is what the fabric holds. The master is an artefact of the training loop that the fabric
