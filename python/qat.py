@@ -45,6 +45,63 @@ CONFIGS = {
 
 COUNTERS = ("scale_saturated", "scale_underflow", "zero_blocks", "nonfinite_blocks")
 
+# The three tensors that model.forward sends through the quantiser, in the order it sends them.
+# The hook cannot see names, only calls, so the call count is the label.
+ACT_SITES = ("input X", "A1", "A2")
+
+
+class ActQuant:
+    """The activation hook for L2a. One tensor in, one quantized tensor out, and a record.
+
+    model.forward calls this three times per step, always in the same order: the input X, then
+    A1, then A2. The order is the only name a hook gets, so it is the label of the record.
+
+    Why the record is per tensor: the three tensors are not equally damaged by FP4. The input of
+    MNIST-1D is a smooth continuous signal with a small range, A1 and A2 are sparse after ReLU.
+    A single pooled number over all three hides which one carries the loss.
+    """
+
+    def __init__(self, table, rule, pre_quantized_input=False):
+        self.table = table
+        self.rule = rule
+        # pre_quantized_input: the caller quantized the input tensor itself, once, before training.
+        # A block of 16 values lives inside one row, so this is identical to quantizing each batch.
+        # When True the input call returns the tensor unchanged and its SQNR comes from the caller.
+        self.pre_quantized_input = pre_quantized_input
+        self.fixed = {}
+        self.reset()
+
+    def reset(self):
+        self.calls = 0
+        self.sqnr_sum = [0.0] * len(ACT_SITES)
+        self.n = [0] * len(ACT_SITES)
+        self.counters = {k: 0 for k in COUNTERS}
+
+    def __call__(self, A):
+        i = self.calls % len(ACT_SITES)
+        self.calls += 1
+        if self.pre_quantized_input and i == 0:
+            return A, {}
+        Aq, _, _, _, counters = q.quantize_blocks_act(A, self.table, self.rule)
+        self.sqnr_sum[i] += q.sqnr(A, Aq)
+        self.n[i] += 1
+        for k in COUNTERS:
+            self.counters[k] += counters[k]
+        return Aq, counters
+
+    def report(self):
+        # Mean SQNR per tensor over the epoch's steps. A tensor that was never called stays 0.0
+        # and its count stays 0, which is visible in the output and not silently averaged.
+        # A site in self.fixed was measured outside the loop (the pre-quantized input) and that
+        # number is constant for the whole run, so it is reported as it is.
+        out = {}
+        for i, name in enumerate(ACT_SITES):
+            if i in self.fixed:
+                out[name] = self.fixed[i]
+            else:
+                out[name] = self.sqnr_sum[i] / self.n[i] if self.n[i] else float("nan")
+        return out
+
 
 def quantize_master(p, table, rule):
     """Return (pq, sqnrs, counters).
@@ -75,7 +132,7 @@ def quantize_master(p, table, rule):
 
 
 def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
-              dtype=DTYPE, verbose=True):
+              acts=False, X_pre_quantized=False, input_sqnr=None, dtype=DTYPE, verbose=True):
     """One L2 run. Returns {"params", "history", "config", "seed"}.
 
     The history has one entry per epoch, plus two per-step records that L1 could not
@@ -99,6 +156,9 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
 
     rng = np.random.default_rng(seed)
     p = init_params(seed, dtype=dtype)
+    hook = ActQuant(table, rule, pre_quantized_input=X_pre_quantized) if acts else None
+    if hook is not None and input_sqnr is not None:
+        hook.fixed[0] = float(input_sqnr)
     m = {k: np.zeros_like(v) for k, v in p.items()}
     v = {k: np.zeros_like(v) for k, v in p.items()}
     t = 1
@@ -106,6 +166,7 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
     history = {
         "train_loss": [], "train_acc": [], "test_loss": [], "test_acc": [],
         "sqnr": [], "counters": [], "frozen_steps": [], "stale_elements": [],
+        "act_sqnr": [], "act_counters": [],
     }
     prev_wq = None
 
@@ -114,6 +175,8 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
         stale = {k: 0 for k in WEIGHTS}
         ep_counters = {k: 0 for k in COUNTERS}
         steps = 0
+        if hook is not None:
+            hook.reset()
 
         indices = np.arange(X.shape[0])
         rng.shuffle(indices)
@@ -134,7 +197,7 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
                     stale[k] += int(np.count_nonzero(same))
             prev_wq = {k: pq[k].copy() for k in WEIGHTS}
 
-            P, cache = forward(pq, X_batch)
+            P, cache = forward(pq, X_batch, quant=hook)
             grads = backward(pq, y_batch, cache)
             # The gradient is at the master, so Adam writes the master. p is mutated in place.
             p, m, v = adam(p, grads, m, v, t)
@@ -144,8 +207,15 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
         pq, sqnrs, _ = quantize_master(p, table, rule)
         prev_wq = {k: pq[k].copy() for k in WEIGHTS}
 
-        train_loss, train_acc = evaluate(p, X, y)
-        test_loss, test_acc = evaluate(p, X_test, y_test)
+        # The reported number is the DEPLOYED model, so it is pq and not the master.
+        # pq is what the fabric holds. The master is an artefact of the training loop that the fabric
+        # never sees, so its accuracy is not the accuracy of this rung.
+        # With acts=True the evaluation also has to quantize the activations, and it uses its own hook
+        # so that the per-tensor SQNR of the training steps stays a training measurement.
+        eval_hook = ActQuant(table, rule, pre_quantized_input=X_pre_quantized) if acts else None
+        train_loss, train_acc = evaluate(pq, X, y, quant=eval_hook)
+        eval_hook = ActQuant(table, rule, pre_quantized_input=X_pre_quantized) if acts else None
+        test_loss, test_acc = evaluate(pq, X_test, y_test, quant=eval_hook)
         history["train_loss"].append(train_loss)
         history["train_acc"].append(train_acc)
         history["test_loss"].append(test_loss)
@@ -154,6 +224,9 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
         history["counters"].append(ep_counters)
         history["frozen_steps"].append(frozen)
         history["stale_elements"].append({k: stale[k] / (steps * p[k].size) for k in WEIGHTS})
+        if hook is not None:
+            history["act_sqnr"].append(hook.report())
+            history["act_counters"].append(dict(hook.counters))
 
         if verbose:
             print(f"{epoch:2d} loss {train_loss:.4f} acc {100 * train_acc:6.2f} "
@@ -221,7 +294,24 @@ def self_check(seed=42, config="a6-e5m3"):
             den = max(abs(num), abs(g[i]), 1e-12)
             worst_grad = max(worst_grad, abs(num - g[i]) / den)
 
-    # 3. how far the quantized loss is from a smooth function
+    # 3. L2a: the forward pass must hand the backward pass the QUANTIZED activations.
+    # This is the one thing that can go silently wrong in L2a. model.forward quantizes X, A1 and A2
+    # and then stores them in the cache, and backward reads the cache. If forward stored the
+    # unquantized values while the multiplies used the quantized ones, the training would still run,
+    # still converge, and measure a model that does not exist. So: every cached activation tensor
+    # must be a fixed point of its own quantizer. Q(A) == A holds only when A is already on the grid.
+    # There is no finite-difference check here on purpose. The STE gradient is the gradient of a
+    # surrogate, so it must NOT agree with a finite difference of the quantized loss. Section 4
+    # measures how far the quantized loss is from a smooth function, which is the same fact.
+    hook = ActQuant(table, rule)
+    _, cache_a = forward(pq, X, quant=hook)
+    on_grid = {}
+    for name in ("X", "A1", "A2"):
+        A = cache_a[name]
+        Aq, _, _, _, _ = q.quantize_blocks_act(A, table, rule)
+        on_grid[name] = bool(np.array_equal(A, Aq))
+
+    # 4. how far the quantized loss is from a smooth function
     X_train, y_train, _, _ = _load("mnist")
     Xs = X_train[:256]
     ys = y_train[:256]
@@ -237,6 +327,7 @@ def self_check(seed=42, config="a6-e5m3"):
         w.flat[i] = old
     return {"idempotent": idempotent, "worst_idempotence_error": worst,
             "worst_gradient_relative_error": worst_grad,
+            "cached_activations_are_on_the_grid": on_grid,
             "of_50_perturbed_weights_that_moved_the_quantized_loss": moved}
 
 
