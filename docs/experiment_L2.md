@@ -319,11 +319,144 @@ On the activations, in L2a, same sum: `scale_saturated` 0, `scale_underflow` 0, 
 6. **The best configuration is `f6-e5m3` on both rungs** (94.80 and 93.97), and the worst is `a6-e5m3` on L2 (94.61) and `a6-e6m2` on L2a (93.88). The whole spread is 0.19 and 0.22 points.
 7. **The staleness problem survives every correction.** It is measured on the optimizer and not on the evaluated model, so the fix did not touch it.
 
-### MNIST-1D
+### MNIST-1D, L2 and L2a, 10 seeds
 
-**Withdrawn, pending a re-run with the corrected evaluation.** The numbers in the first version came from the float master and are not evidence for anything.
+Same conditions: float32, full 100,000-sample test set, 10 epochs, batch 128. One epoch is 3,125 steps.
 
-- size: `python/l2_sweep.py mnist1d 10 w` needs about 2.5 minutes for each of 40 runs, so 1.7 hours.
-- `python/l2_sweep.py mnist1d 10 wa` needs about 2.5 minutes for each of 40 runs as well, because the input is quantized once outside the loop. So another 1.7 hours.
+| rung | accuracy, four configurations in the order a6-e6m2 / f6-e6m2 / a6-e5m3 / f6-e5m3 | drop against L0 |
+|-|-:|-:|
+| L0 | **64.98** | – |
+| L1a | 56.77 | 8.21 |
+| ptq for L2 | 54.96 / 56.19 / 56.28 / 57.01 | 10.02 / 8.79 / 8.70 / 7.97 |
+| **L2** | **63.26 / 63.35 / 63.26 / 63.55** | **1.71 / 1.63 / 1.72 / 1.42** |
+| ptq for L2a | 52.01 / 53.40 / 53.60 / 54.50 | 12.97 / 11.58 / 11.38 / 10.48 |
+| **L2a** | **62.30 / 62.29 / 62.48 / 62.66** | **2.68 / 2.68 / 2.50 / 2.32** |
 
-MNIST-1D is 2.5 times more sensitive to the same weight quantization (ptq drop 7.97 to 10.02 against 1.46 to 2.44), so it is where the four configurations separate, if they separate at all on this project's evidence so far.
+What training recovers:
+
+|configuration|L2 ptq drop|L2 drop|recovered|L2a ptq drop|L2a drop|recovered|
+|-|-:|-:|-:|-:|-:|-:|
+|a6-e6m2|10.02|1.71|8.31|12.97|2.68|10.29|
+|f6-e6m2|8.79|1.63|7.16|11.58|2.68|8.90|
+|a6-e5m3|8.70|1.72|6.98|11.38|2.50|8.87|
+|f6-e5m3|7.97|1.42|6.54|10.48|2.32|8.16|
+
+Per-seed accuracy, L2:
+
+|seed|L0|a6-e6m2|f6-e6m2|a6-e5m3|f6-e5m3|
+|-|-:|-:|-:|-:|-:|
+|42|64.89|63.34|63.69|63.52|63.63|
+|4242|64.75|63.33|63.13|62.95|62.98|
+|424242|65.17|63.27|64.22|63.81|64.06|
+|123|64.44|63.96|63.04|62.31|62.87|
+|456|64.86|64.16|61.24|62.69|63.50|
+|789|64.43|63.48|62.78|63.68|63.10|
+|1010|65.33|62.93|62.27|63.20|63.88|
+|2020|65.12|64.02|64.20|63.96|63.91|
+|3030|66.33|61.38|64.30|63.46|63.67|
+|4040|64.45|62.80|64.65|63.02|63.93|
+|**mean**|**64.98**|**63.26**|**63.35**|**63.26**|**63.55**|
+
+Per-seed accuracy, L2a:
+
+|seed|L0|a6-e6m2|f6-e6m2|a6-e5m3|f6-e5m3|
+|-|-:|-:|-:|-:|-:|
+|42|64.89|62.49|63.03|61.50|62.85|
+|4242|64.75|62.46|62.44|62.76|63.39|
+|424242|65.17|61.95|60.66|62.53|63.01|
+|123|64.44|61.83|62.02|61.78|62.18|
+|456|64.86|62.56|62.73|63.69|61.93|
+|789|64.43|62.73|62.50|61.61|60.82|
+|1010|65.33|62.04|62.29|62.32|62.95|
+|2020|65.12|62.47|62.82|63.90|62.71|
+|3030|66.33|61.93|62.71|62.90|62.79|
+|4040|64.45|62.54|61.74|61.77|63.92|
+|**mean**|**64.98**|**62.30**|**62.29**|**62.48**|**62.66**|
+
+The decision rule, applied to every pair:
+
+L2:
+
+|a|b|mean a-b|standard error|sign agrees|condition 1|condition 2|winner|
+|-|-|-:|-:|-:|-:|-:|-|
+|L2 a6-e6m2|L0|-1.71|0.40|10/10|yes|yes|**L0**|
+|L2 f6-e6m2|L0|-1.63|0.34|9/10|yes|yes|**L0**|
+|L2 a6-e5m3|L0|-1.72|0.20|10/10|yes|yes|**L0**|
+|L2 f6-e5m3|L0|-1.42|0.17|10/10|yes|yes|**L0**|
+|L2 a6-e6m2|ptq a6-e6m2|+8.31|1.54|10/10|yes|yes|**L2**|
+|L2 f6-e6m2|ptq f6-e6m2|+7.16|1.18|10/10|yes|yes|**L2**|
+|L2 a6-e5m3|ptq a6-e5m3|+6.98|1.06|10/10|yes|yes|**L2**|
+|L2 f6-e5m3|ptq f6-e5m3|+6.54|1.00|10/10|yes|yes|**L2**|
+|L2 a6-e6m2|L2 f6-e6m2|-0.09|0.51|5/10|no|no|no decision|
+|**L2 a6-e5m3**|**L2 f6-e5m3**|**-0.29**|**0.14**|**8/10**|**yes**|**yes**|**four6**|
+|L2 a6-e6m2|L2 a6-e5m3|+0.00|0.33|4/10|no|no|no decision|
+|L2 f6-e6m2|L2 f6-e5m3|-0.20|0.31|3/10|no|no|no decision|
+
+L2a:
+
+|a|b|mean a-b|standard error|sign agrees|condition 1|condition 2|winner|
+|-|-|-:|-:|-:|-:|-:|-|
+|L2a a6-e6m2|L0|-2.68|0.25|10/10|yes|yes|**L0**|
+|L2a f6-e6m2|L0|-2.68|0.26|10/10|yes|yes|**L0**|
+|L2a a6-e5m3|L0|-2.50|0.25|10/10|yes|yes|**L0**|
+|L2a f6-e5m3|L0|-2.32|0.29|10/10|yes|yes|**L0**|
+|L2a a6-e6m2|ptq a6-e6m2|+10.29|1.29|10/10|yes|yes|**L2a**|
+|L2a f6-e6m2|ptq f6-e6m2|+8.90|1.19|10/10|yes|yes|**L2a**|
+|L2a a6-e5m3|ptq a6-e5m3|+8.87|0.88|10/10|yes|yes|**L2a**|
+|L2a f6-e5m3|ptq f6-e5m3|+8.16|0.85|10/10|yes|yes|**L2a**|
+|L2a a6-e6m2|L2a f6-e6m2|+0.01|0.20|4/10|no|no|no decision|
+|L2a a6-e5m3|L2a f6-e5m3|-0.18|0.37|6/10|no|no|no decision|
+|L2a a6-e6m2|L2a a6-e5m3|-0.17|0.29|6/10|no|no|no decision|
+|L2a f6-e6m2|L2a f6-e5m3|-0.36|0.39|6/10|no|no|no decision|
+
+Stale weights and frozen steps, mean over the 10 seeds, 3,125 steps in an epoch:
+
+|rung|configuration|SQNR W1|stale W1|frozen steps|
+|-|-|-:|-:|-:|
+|L2|a6-e6m2|19.79|98.17%|552.2|
+|L2|f6-e6m2|20.75|97.11%|797.1|
+|L2|a6-e5m3|20.00|97.47%|513.9|
+|L2|f6-e5m3|20.90|96.34%|869.7|
+|L2a|a6-e6m2|19.56|98.72%|339.1|
+|L2a|f6-e6m2|20.68|97.78%|618.7|
+|L2a|a6-e5m3|19.76|98.21%|358.0|
+|L2a|f6-e5m3|20.87|97.12%|676.0|
+
+Activation SQNR, L2a:
+
+|configuration|input X|A1|A2|
+|-|-:|-:|-:|
+|a6-e6m2|20.53|20.94|21.22|
+|f6-e6m2|23.07|22.04|22.48|
+|a6-e5m3|21.02|21.41|22.11|
+|f6-e5m3|23.17|22.53|23.11|
+
+**On MNIST-1D the input is the worst tensor of the three, and on MNIST it is the best.** So the ordering of the three tensors is a property of the dataset and not of the format, and no single pooled SQNR number can stand for the activation cost.
+
+Scale counters, activations, summed over every epoch of every seed and configuration: `scale_saturated` 0, `scale_underflow` 0, **`zero_blocks` 304**, `nonfinite_blocks` 0. The weights give 0 on all four, as on MNIST.
+
+### The verdict of L2 and L2a, both datasets
+
+The pre-registered rule needs both conditions on **both** datasets, so a row is decided only when MNIST and MNIST-1D agree. There are four comparisons for a rule or a format, and each one is measured four times: L2 and L2a, on two datasets.
+
+|question|MNIST L2|MNIST-1D L2|MNIST L2a|MNIST-1D L2a|verdict|
+|-|-|-|-|-|-|
+|`four6` against `amax/6`, UE5M3|no decision, 8/10 signs, condition 2 fails|-0.29, decided|no decision|-0.18, no decision|**no decision. One of four cells passes**|
+|`four6` against `amax/6`, UE6M2|-0.05, no decision|-0.09, no decision|+0.01, no decision|-0.21, no decision|**no decision**|
+|UE6M2 against UE5M3 under `amax/6`|+0.12, no decision|+0.00, no decision|-0.03, no decision|-0.17, no decision|**no decision**|
+|UE6M2 against UE5M3 under `four6`|-0.03, no decision|-0.20, no decision|+0.13, no decision|-0.36, no decision|**no decision**|
+
+**So L1, L1d, L2 and L2a, on two datasets and ten seeds, do not separate the two scale formats, and do not separate the two scale rules.** Sixteen comparisons, one decided cell. The `four6` cell that is decided points the same way as the withdrawn result, and it is one cell out of four, so the rule keeps the option open and moves both rules and both formats to the next rung.
+
+**That is the result of L2 and L2a.** The format question is not answered by accuracy under quantization-aware training. It moves to the gradients.
+
+### What L2 and L2a do settle
+
+|finding|evidence|
+|-|-|
+|an FP4 forward pass with a float32 trainer works|weight-only drop 0.21 to 0.41 points on MNIST, 1.42 to 1.72 on MNIST-1D, all decided|
+|the activation half of the MAC costs more than the weight half|on MNIST, 1.13 against 0.29 points for the same rule. On MNIST-1D, 2.50 against 1.71|
+|training recovers most of the PTQ loss|1.2 to 2.0 points in L2, 2.5 to 3.6 in L2a on MNIST, and 6.5 to 10.3 in L2a on MNIST-1D|
+|the input is not the worst tensor|it is the best on MNIST and the worst on MNIST-1D, so it must be measured per dataset|
+|the zero-block path is a real path|6 zero blocks on MNIST activations, 304 on MNIST-1D, 0 on weights anywhere|
+|the optimizer cannot follow the grid|96 to 99 percent of the weight elements do not move their FP4 value per step, and 256 to 870 steps per epoch have the whole matrix frozen|
