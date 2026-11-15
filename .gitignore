@@ -32,7 +32,9 @@ out/*
 .DS_Store
 *.swp
 
-# The four curve figures are evidence and they are committed in docs/, so they are excepted from the
-# plot rule. They are the only figures in the repository: curves.py writes them there and nowhere
-# else. Keep this last, because the last matching rule wins.
+# The curve figures and the block figure are evidence and they are committed in docs/, so they are
+# excepted from the plot rule. They are the only figures in the repository: curves.py and
+# block_sweep.py write them there and nowhere else. Keep this last, because the last matching rule
+# wins.
 !docs/curves_*.png
+!docs/block_*.png

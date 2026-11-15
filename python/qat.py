@@ -27,7 +27,7 @@ step 4 writes into the master: the two dictionaries must be different objects.
 """
 import numpy as np
 import quant as q
-from model import init_params, adam, forward, backward, evaluate
+from model import init_params, adam, forward, backward, evaluate, onehot, relu_derivative
 from train import DTYPE
 
 # The three matrices that are quantized. The biases are left out on purpose.
@@ -44,6 +44,28 @@ CONFIGS = {
 }
 
 COUNTERS = ("scale_saturated", "scale_underflow", "zero_blocks", "nonfinite_blocks")
+
+# The arms of the weight-blocking experiment. Each arm is one choice of block shape for the weight
+# matrices. The reference is rung L2 itself and needs no code: it is the K-blocked one-copy form.
+#
+#   "ref"  one scale per 16 inputs, one copy, used by the forward pass and the backward pass
+#   "A"    two copies: one scale per 16 inputs for the forward pass, one scale per 16 outputs for
+#          the backward pass. Both copies come from the same float master, so they are not equal.
+#   "B2"   one scale per 16 by 16 tile, W2 and W3 only
+#   "B3"   one scale per 16 by 16 tile, all three matrices
+#   "C2"   one scale per 4 by 4 tile, W2 and W3 only
+#   "C3"   one scale per 4 by 4 tile, all three matrices
+#
+# W1 has no backward GEMM, so it has no second copy and arm A cannot touch it. That is why arm A
+# names W2 and W3 only, and why arms B and C come in a W2/W3 form and an all-matrix form.
+TILES = {
+    "A": None,
+    "B2": ((16, 16), ("W2", "W3")),
+    "B3": ((16, 16), ("W1", "W2", "W3")),
+    "C2": ((4, 4), ("W2", "W3")),
+    "C3": ((4, 4), ("W1", "W2", "W3")),
+}
+ARMS = ("ref",) + tuple(TILES)
 
 # The three tensors that model.forward sends through the quantiser, in the order it sends them.
 # The hook cannot see names, only calls, so the call count is the label.
@@ -131,9 +153,132 @@ def quantize_master(p, table, rule):
     return pq, sqnrs, counters
 
 
+def quantize_tiles(W, tile, table, rule):
+    """One scale per a-by-b tile of W. tile = (a rows along K, b columns along N).
+
+    A tile needs both axes to be a multiple of the tile size, so the matrix is zero padded. A zero
+    never changes amax and it decodes to zero, so the padding is invisible in the result.
+
+    Returns (Wq, counters). The tile is flattened into the (rows, blocks, values) layout that
+    quantize_blocks expects, so a tile of 16 by 16 is a block of 256 values.
+    """
+    a, b = tile
+    K, N = W.shape
+    Kp, Np = -(-K // a) * a, -(-N // b) * b
+    Wp = np.zeros((Kp, Np), dtype=W.dtype)
+    Wp[:K, :N] = W
+    Tl = Wp.reshape(Kp // a, a, Np // b, b).transpose(0, 2, 1, 3).reshape(Kp // a, Np // b, a * b)
+    Th, _, _, _, counters = q.quantize_blocks(Tl, table, rule)
+    Wq = Th.reshape(Kp // a, Np // b, a, b).transpose(0, 2, 1, 3).reshape(Kp, Np)[:K, :N]
+    return Wq, counters
+
+
+def quantize_blocks_n(W, table, rule, block=16):
+    """One scale per 16 columns of W: blocks along N, the axis that dA = dZ @ W.T reduces over.
+
+    This is the second copy of arm A. It is built from the same float master as the first copy,
+    which is the NVIDIA option 2 form of the transpose problem (docs/experiment_L2.md).
+    """
+    K, N = W.shape
+    Np = -(-N // block) * block
+    Wp = np.zeros((K, Np), dtype=W.dtype)
+    Wp[:, :N] = W
+    Wb, _, _, _, counters = q.quantize_blocks(Wp.reshape(K, Np // block, block), table, rule)
+    return Wb.reshape(K, Np)[:, :N], counters
+
+
+def quantize_arm(p, table, rule, arm="ref"):
+    """The forward copy of the weights for one arm. Returns (pq, sqnrs, counters).
+
+    Same contract as quantize_master. "ref" and "A" block along K, because the forward pass
+    reduces over K in both. "B2"/"C2" tile W2 and W3 and leave W1 blocked along K. "B3"/"C3"
+    tile all three. The biases pass through untouched, as in every rung.
+    """
+    if arm not in ARMS:
+        raise ValueError(f"unknown arm {arm!r}, expected one of {list(ARMS)}")
+    tile, names = TILES.get(arm) or (None, ())
+    pq, sqnrs = {}, {}
+    counters = {k: 0 for k in COUNTERS}
+    for k, v in p.items():
+        if k not in WEIGHTS:
+            pq[k] = v
+            continue
+        if tile is not None and k in names:
+            wq, c = quantize_tiles(v, tile, table, rule)
+        else:
+            wq, _, _, _, c = q.quantize_blocks_weights(v, table, rule)
+        pq[k] = wq
+        sqnrs[k] = q.sqnr(v, wq)
+        for name in COUNTERS:
+            counters[name] += c[name]
+    return pq, sqnrs, counters
+
+
+def backward_copy(p, table, rule):
+    """Arm A only: the copy of the weights that the backward pass reads. W2 and W3 blocked along N."""
+    pb = dict(p)
+    for k in ("W2", "W3"):
+        pb[k] = quantize_blocks_n(p[k], table, rule)[0]
+    return pb
+
+
+def _cos(u, v):
+    u, v = np.asarray(u, dtype=np.float64).ravel(), np.asarray(v, dtype=np.float64).ravel()
+    nu, nv = np.linalg.norm(u), np.linalg.norm(v)
+    return float(u @ v / (nu * nv)) if nu > 0 and nv > 0 else 1.0
+
+
+def drift_telemetry(pq, pb, X_probe, y_probe):
+    """Arm A only: how far the two copies of W2 and W3 sit apart, and how far the gradients they move sit apart.
+
+    One forward pass with the forward copy, then the backward pass run twice on the same cache, once
+    with each copy. The second run is the drift itself: the activations are those of the forward
+    copy, but the matrix that pushes the delta down is the other copy. A real engine does exactly
+    this, because the backward pass reads W.T and W.T is blocked along the other axis.
+
+    Which copy moves which gradient, because it is not the obvious one:
+
+        dW3 = A2.T @ dZ3            reads A2 and dZ3. It never reads W3. So the W3 copy cannot move it.
+        dA2 = dZ3 @ W3.T            the W3 copy moves this, and so dW2 = A1.T @ (dA2 * relu'(Z2))
+        dA1 = dZ2 @ W2.T            the W2 copy moves this, and so dW1 = X.T @ (dA1 * relu'(Z1))
+
+    cos_w      cosine between the two copies of one matrix. 1.0 means the copies are equal.
+    cos_dA     cosine between the two gradients that enter a layer, which is the drift proper.
+    cos_dW     cosine between the two parameter gradients, which is what the optimizer sees.
+    same_w     share of elements where the two copies hold the same value.
+    """
+    B = y_probe.shape[0]
+    P, cache = forward(pq, X_probe)
+    dZ3 = (P - onehot(y_probe)) / B
+    out = {}
+    dA2 = {"f": dZ3 @ pq["W3"].T, "b": dZ3 @ pb["W3"].T}
+    out["cos_dA2"] = _cos(dA2["f"], dA2["b"])
+    dZ2 = {k: dA2[k] * relu_derivative(cache["Z2"]) for k in dA2}
+    out["cos_dW2"] = _cos(cache["A1"].T @ dZ2["f"], cache["A1"].T @ dZ2["b"])
+    out["cos_dW3"] = _cos(cache["A2"].T @ dZ3, cache["A2"].T @ dZ3)
+    dA1 = {k: dZ2[k] @ (pq if k == "f" else pb)["W2"].T for k in dZ2}
+    out["cos_dA1"] = _cos(dA1["f"], dA1["b"])
+    dZ1 = {k: dA1[k] * relu_derivative(cache["Z1"]) for k in dA1}
+    out["cos_dW1"] = _cos(cache["X"].T @ dZ1["f"], cache["X"].T @ dZ1["b"])
+    for k in ("W2", "W3"):
+        out[f"cos_w_{k}"] = _cos(pq[k], pb[k])
+        out[f"same_w_{k}"] = float(np.mean(pq[k] == pb[k]))
+    return out
+
+
 def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
-              acts=False, X_pre_quantized=False, input_sqnr=None, dtype=DTYPE, verbose=True):
-    """One L2 run. Returns {"params", "history", "config", "seed"}.
+              acts=False, X_pre_quantized=False, input_sqnr=None, dtype=DTYPE, verbose=True,
+              arm="ref"):
+    """One training run of the weight-blocking experiment.
+
+    arm selects how the weight matrices are blocked. "ref" is rung L2 exactly as it was before
+    this argument existed: the default path below is the same calls in the same order, so every
+    L2 and L2a result on disk stays valid. The arms are listed in ARMS and TILES.
+
+    Arm A builds a second weight copy inside the step, from the master and before Adam moves it.
+    The forward pass reads the first copy and the backward pass reads the second one.
+
+    Returns {"params", "history", "config", "seed"}.
 
     The history has one entry per epoch, plus two per-step records that L1 could not
     produce, because L1 never had a moving weight:
@@ -166,7 +311,7 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
     history = {
         "train_loss": [], "train_acc": [], "test_loss": [], "test_acc": [],
         "sqnr": [], "counters": [], "frozen_steps": [], "stale_elements": [],
-        "act_sqnr": [], "act_counters": [],
+        "act_sqnr": [], "act_counters": [], "drift": [],
     }
     prev_wq = None
 
@@ -185,7 +330,7 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
             X_batch = X[batch_indices]
             y_batch = y[batch_indices]
 
-            pq, _, counters = quantize_master(p, table, rule)
+            pq, _, counters = quantize_arm(p, table, rule, arm)
             for name in COUNTERS:
                 ep_counters[name] += counters[name]
 
@@ -197,14 +342,16 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
                     stale[k] += int(np.count_nonzero(same))
             prev_wq = {k: pq[k].copy() for k in WEIGHTS}
 
+            # Arm A: the second copy is built from the master as it stands now, before Adam moves it.
+            pb = backward_copy(p, table, rule) if arm == "A" else None
             P, cache = forward(pq, X_batch, quant=hook)
-            grads = backward(pq, y_batch, cache)
+            grads = backward(pb if arm == "A" else pq, y_batch, cache)
             # The gradient is at the master, so Adam writes the master. p is mutated in place.
             p, m, v = adam(p, grads, m, v, t)
             t += 1
             steps += 1
 
-        pq, sqnrs, _ = quantize_master(p, table, rule)
+        pq, sqnrs, _ = quantize_arm(p, table, rule, arm)
         # prev_wq is NOT refreshed here on purpose. pq at this point is the same quantized master as the
         # first comparison of the next epoch would be, so refreshing it would add one self-comparison per
         # epoch: a step counted as frozen that compared a tensor with itself. Left alone, the first step of
@@ -224,6 +371,10 @@ def train_qat(seed, epochs, batch_size, X, y, X_test, y_test, config,
         history["train_acc"].append(train_acc)
         history["test_loss"].append(test_loss)
         history["test_acc"].append(test_acc)
+        if arm == "A":
+            # Once per epoch, on a fixed probe batch, so the epochs are comparable.
+            history["drift"].append(drift_telemetry(pq, backward_copy(p, table, rule),
+                                                    X[:batch_size], y[:batch_size]))
         history["sqnr"].append(sqnrs)
         history["counters"].append(ep_counters)
         history["frozen_steps"].append(frozen)
