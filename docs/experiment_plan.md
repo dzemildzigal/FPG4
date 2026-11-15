@@ -18,10 +18,23 @@ All experiments will be in software, Python before RTL work starts.
 |L4|FP64 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3?|
 |L5|FP4 forward and backprop (L2+L3+L4), optimizer FP64|does native weight and activations in FP4 train?|
 |L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains?|
-|L7|add ECO, second FP4 tensor|does it recover updates below 1 grid step|
+|L7|add ECO, no second tensor: the rounding error goes into the momentum|does it recover updates below 1 grid step|
 |L8|add Hadamard mixing|does outlier transformation help?|
 
 Compare N to N-1. If delta is < than seed induced variance, the change was not substantial. Always test across seeds.
+
+## L6 has two forms, and both MUST be run
+
+L6 is the first rung with no float32 parameter anywhere. Two separate questions sit in it. They must be measured one at a time, the same way every other rung is measured.
+
+|form|what stays float32|what is FP4|question|
+|-|-|-|-|
+|L6a, wide optimizer state|Adam `m` and `v`|weights, activations, gradients, the update|does a full FP4 loop train when the optimizer state stays float32?|
+|L6b, FP4 optimizer state|nothing|the same as L6a, and `m` and `v`|can the optimizer state itself be FP4?|
+
+`m` is Adam's running mean of the gradient. `v` is Adam's running mean of the squared gradient. Adam divides the update by `sqrt(v)`. The values of `v` are squares of gradients, so they fall in a wide range across the layers of one network. A 4-bit block format holds 8 magnitudes per block. Whether it holds `v` is not known.
+
+This experiment MUST be run. It MUST NOT be decided by argument. If the answer is yes, the whole training state of 13,002 weights falls from 1,306,701 bits (master, `m`, `v` in float32) to 175,527 bits (weights, `m`, `v` in FP4 at 4.5 bits per value). That is 7.4 times less.
 
 ## The arithmetic axes (L1e)
 
