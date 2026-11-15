@@ -470,15 +470,15 @@ Two figures per dataset. The x axis is the training epoch, 1 to 10. The y axis i
 
 |file|content|
 |-|-|
-|`out/curves_mnist_loss.png`|MNIST, loss against epoch, L0 and L2 and L2a|
-|`out/curves_mnist_acc.png`|MNIST, accuracy against epoch, the same three runs|
-|`out/curves_mnist1d_loss.png`|MNIST-1D, loss against epoch|
-|`out/curves_mnist1d_acc.png`|MNIST-1D, accuracy against epoch|
+|`docs/curves_mnist_loss.png`|MNIST, loss against epoch, L0 and L2 and L2a|
+|`docs/curves_mnist_acc.png`|MNIST, accuracy against epoch, the same three runs|
+|`docs/curves_mnist1d_loss.png`|MNIST-1D, loss against epoch|
+|`docs/curves_mnist1d_acc.png`|MNIST-1D, accuracy against epoch|
 |`out/curves_<dataset>.json`|the same numbers, mean per epoch, so the figures are not the only record|
 |`python/l0_history.json`|the L0 per-epoch history of the three seeds below|
 |`python/curves.py`|the script that draws all of them. **It trains nothing**|
 
-The four figures are also copied into this folder by `curves.py`, so they can be shown here. The copy is made by the script and is never edited by hand.
+`curves.py` writes the four figures into this folder and nowhere else, so the repository holds one copy of each.
 
 **MNIST, loss and accuracy**
 

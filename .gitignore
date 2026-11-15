@@ -32,8 +32,7 @@ out/*
 .DS_Store
 *.swp
 
-# The curve figures are evidence and they are committed, so they are excepted from the two rules
-# above and from the plot rule. The negation only works on out/*, not on out/ : git cannot
-# re-include a file whose parent directory is excluded. Keep it last, because the last match wins.
-!out/curves_*.png
+# The four curve figures are evidence and they are committed in docs/, so they are excepted from the
+# plot rule. They are the only figures in the repository: curves.py writes them there and nowhere
+# else. Keep this last, because the last matching rule wins.
 !docs/curves_*.png

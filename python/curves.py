@@ -47,7 +47,6 @@ Usage
 import json
 import os
 import re
-import shutil
 import sys
 
 import numpy as np
@@ -60,6 +59,9 @@ import l2_sweep as sweep
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.join(HERE, "..", "out")
+# The figures live in docs/ and only there: docs/experiment_L2.md shows them, and two copies of the
+# same PNG in one repository is one copy too many. The JSON stays in out/ with the other results.
+DOCS = os.path.join(HERE, "..", "docs")
 KEYS = ("train_loss", "train_acc", "test_loss", "test_acc")
 CONFIGS = ("a6-e6m2", "f6-e6m2", "a6-e5m3", "f6-e5m3")
 MODES = {"w": "L2", "wa": "L2a"}
@@ -245,11 +247,8 @@ def draw(dataset):
         fig.text(0.01, 0.01, f"L0 float32 | L2 {chosen['L2']} | L2a {chosen['L2a']} | "
                              f"dashed = train, solid = test", fontsize=7.5, color="#555555")
         fig.tight_layout(rect=(0, 0.03, 1, 1))
-        path = os.path.join(OUT, f"curves_{dataset}_{suffix}.png")
+        path = os.path.join(DOCS, f"curves_{dataset}_{suffix}.png")
         fig.savefig(path, dpi=130)
-        # A copy in docs/, so that docs/experiment_L2.md can show the figure. The copy is made
-        # here and never edited by hand, so the two can not drift apart.
-        shutil.copyfile(path, os.path.join(HERE, "..", "docs", os.path.basename(path)))
         plt.close(fig)
         print(f"wrote {path}")
     print(f"wrote {path_json}")
