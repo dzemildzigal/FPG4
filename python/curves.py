@@ -47,6 +47,7 @@ Usage
 import json
 import os
 import re
+import shutil
 import sys
 
 import numpy as np
@@ -64,6 +65,10 @@ CONFIGS = ("a6-e6m2", "f6-e6m2", "a6-e5m3", "f6-e5m3")
 MODES = {"w": "L2", "wa": "L2a"}
 COLOUR = {"L0": "#222222", "L2": "#1f77b4", "L2a": "#d95f02"}
 PROBE_SEEDS = (42, 4242, 424242)
+# The jitter measurement below starts at this epoch and ignores the fast climb before it. Before
+# epoch 4 every rung is still gaining more than a point per epoch, and that gain is the fit, not
+# the step. From epoch 4 the curve is in its slow tail, where a movement is a movement.
+FIRST_STABLE = 4
 PROBE_LOG = "/tmp/fp32_probe.log"
 L0_FILE = os.path.join(HERE, "l0_history.json")
 
@@ -188,13 +193,32 @@ def draw(dataset):
                   f"{'  <- drawn' if config == best else ''}")
         curves[rung] = rung_curves(mode, dataset, best, PROBE_SEEDS)
 
+    # Per seed test accuracy, shape (epochs, seeds), for the jitter measurement. The mean curves
+    # above cannot show the jitter: the seeds move in different directions and the mean cancels it.
+    acc_per_seed = {"L0": np.array([np.array(l0[dataset][str(seed)]["test_acc"]) * 100.0
+                                    for seed in PROBE_SEEDS]).T}
+    for mode, rung in MODES.items():
+        rows = [read_run(mode, dataset, chosen[rung], seed) for seed in PROBE_SEEDS]
+        acc_per_seed[rung] = np.array([r["test_acc"] for r in rows], dtype=float).T
+    # |change| of one epoch to the next, from epoch FIRST_STABLE on, per seed. Then the mean of those.
+    jitter = {rung: np.abs(np.diff(a[FIRST_STABLE - 1:], axis=0)).mean(axis=0)
+              for rung, a in acc_per_seed.items()}
+
     epochs = np.arange(1, sweep.EPOCHS + 1)
     export = {"dataset": dataset, "config": chosen, "seeds": list(PROBE_SEEDS),
               "epochs": sweep.EPOCHS, "note": "each entry is the mean over the seeds above",
+              "jitter_test_acc_epochs": [FIRST_STABLE, sweep.EPOCHS],
+              "jitter_test_acc": {r: {"per_seed": np.asarray(v).tolist(),
+                                      "mean": float(np.mean(v))} for r, v in jitter.items()},
               "rungs": {r: {k: np.asarray(v).tolist() for k, v in h.items()}
                         for r, h in curves.items()}}
     path_json = os.path.join(OUT, f"curves_{dataset}.json")
     json.dump(export, open(path_json, "w"), indent=1)
+
+    print(f"\nmean |change| of test accuracy between one epoch and the next, "
+          f"epochs {FIRST_STABLE} to {sweep.EPOCHS}, per seed then averaged")
+    for rung, v in jitter.items():
+        print(f"    {rung:4s} " + " ".join(f"{x:.3f}" for x in v) + f"   mean {np.mean(v):.3f}")
 
     for key, ylabel, suffix, title in (
             ("loss", "cross entropy loss", "loss", "loss"),
@@ -223,6 +247,9 @@ def draw(dataset):
         fig.tight_layout(rect=(0, 0.03, 1, 1))
         path = os.path.join(OUT, f"curves_{dataset}_{suffix}.png")
         fig.savefig(path, dpi=130)
+        # A copy in docs/, so that docs/experiment_L2.md can show the figure. The copy is made
+        # here and never edited by hand, so the two can not drift apart.
+        shutil.copyfile(path, os.path.join(HERE, "..", "docs", os.path.basename(path)))
         plt.close(fig)
         print(f"wrote {path}")
     print(f"wrote {path_json}")

@@ -478,6 +478,20 @@ Two figures per dataset. The x axis is the training epoch, 1 to 10. The y axis i
 |`python/l0_history.json`|the L0 per-epoch history of the three seeds below|
 |`python/curves.py`|the script that draws all of them. **It trains nothing**|
 
+The four figures are also copied into this folder by `curves.py`, so they can be shown here. The copy is made by the script and is never edited by hand.
+
+**MNIST, loss and accuracy**
+
+![MNIST loss against training epoch](curves_mnist_loss.png)
+
+![MNIST accuracy against training epoch](curves_mnist_acc.png)
+
+**MNIST-1D, loss and accuracy**
+
+![MNIST-1D loss against training epoch](curves_mnist1d_loss.png)
+
+![MNIST-1D accuracy against training epoch](curves_mnist1d_acc.png)
+
 ### Two limits of the data, and neither is filled in
 
 **1. The figures average three seeds, not ten.**
@@ -512,3 +526,53 @@ The rule is mechanical: the highest mean final test accuracy over the ten availa
 **"Training gap" is train accuracy minus test accuracy at the last epoch.** It is the usual first sign of overfitting. It stays under one point everywhere, and it is smaller on the quantized rungs than on L0, so the grid regularizes.
 
 **Nothing has flattened at epoch 10.** A 20-epoch probe on one MNIST seed gave both L0 and L2 about 0.8 more points, so the absolute numbers in this document are about 0.8 points below what this architecture reaches. The gaps between the rungs did not change in that probe, so the comparisons below stand.
+
+### What is characteristic of a quantized curve, and what is not
+
+**"Jitter" is the mean absolute change of the test accuracy from one epoch to the next, from epoch 4 to epoch 10, computed per seed and then averaged.** Epochs 1 to 3 are left out because every rung gains more than a point per epoch there, and that gain is the fit, not the step.
+
+|dataset|L0|L2|L2a|
+|-|-:|-:|-:|
+|MNIST|**0.201**|0.367|0.361|
+|MNIST-1D|**0.341**|0.636|0.663|
+
+**The quantized models move about 1.8 times further between two epochs than the float model.** The same table is printed by `python/curves.py` and stored in `out/curves_<dataset>.json`.
+
+**The jitter is invisible in the mean curve and it is the band that shows it.** The three seeds move in different directions at the same epoch, so their mean stays smooth while each seed steps. One seed of L2 on MNIST-1D reads 64.45, 62.97, 64.49, 64.06 across four epochs. That is a fall of 1.48 points and a rise of 1.52 points, on a curve whose total gain is under 4 points.
+
+**The reversals that the mean does show:**
+
+|where|the movement|
+|-|-|
+|MNIST accuracy, L2|94.44, 94.53, **94.16**, 94.71. A fall of 0.37 at epoch 9 and a rise of 0.55 after it|
+|MNIST loss, L2|0.1898, **0.1984**, 0.1814. It rises by 0.0086 and then falls by 0.0170|
+|MNIST-1D accuracy, L2|flat from epoch 4 to epoch 8 at 62.59, 62.63, 63.17, 63.29, 63.29, then 63.81|
+
+**L0 never does this.** Its largest single-epoch reversal on MNIST is 0.05 points, which is seven times smaller than the 0.37 reversal of L2.
+
+**The standard error of the mean curve is wider on the quantized rungs for the same reason.**
+
+|dataset|series|L0|L2|L2a|
+|-|-|-:|-:|-:|
+|MNIST|test loss|0.0039|0.0033|0.0064|
+|MNIST-1D|test loss|0.0067|0.0111|0.0082|
+|MNIST-1D|test accuracy|0.263|0.417|0.327|
+
+### Three things the shape of the curves settles
+
+|what the figure shows|the evidence|
+|-|-|
+|**no crossing**|L0 is above L2 and L2 is above L2a at every one of the 10 epochs, on both datasets. The order is already there at epoch 1, at 91.69, 91.04 and 89.85. **Quantization is an offset, not a delay.** The quantized model does not start late and catch up, it follows the same shape lower down|
+|**no distortion of the shape**|all three rungs have the same shape: a fast drop to epoch 3 or 4, then a long slow tail. The optimizer path is shifted, not bent|
+|**no overfitting on the quantized rungs**|on the MNIST loss figure the L0 train curve still falls to 0.1372 at epoch 10 while its test curve turns up from 0.1676 to 0.1688. **That pair is the first sign of overfitting, and only L0 shows it.** L2 falls 0.0170 in its last epoch and L2a falls 0.0043|
+
+**L2a recovers the most of the three, because it starts lowest.** On MNIST it goes from 89.85 to 94.03, a gain of 4.18 points, against L0's 91.69 to 95.18, a gain of 3.49.
+
+### The jitter and the frozen weights are one fact seen at two levels
+
+|level|what moves in steps|
+|-|-|
+|inside the training loop|98 to 99 percent of the weight elements keep the same FP4 value from one step to the next. The master moves every step and the fabric does not see it|
+|at the output of the training loop|the test accuracy stays still for several epochs and then moves one step|
+
+**The jaggedness in the figures is the frozen weight matrix, seen from outside.** A block of weights crosses its grid lines in a burst, so the loss and the accuracy move in a burst. Float moves a little at every step, so its curve is smooth. **This is the measurement that L3 is expected to make worse and that L7 exists to fix.**
