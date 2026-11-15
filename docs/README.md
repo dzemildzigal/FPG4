@@ -11,7 +11,9 @@ the work that follows it.
 | `results-e8.md` | Experiment E8, delayed scaling against the block buffer. Restored from the archive because it agrees with the current architecture | Active. Measurement, not a plan |
 | `experiment_plan.md` | The rungs and what each one is allowed to change | Active |
 | `experiment_L1.md` | L1, L1d, L1d-bias and L1e measured on MNIST and MNIST-1D | Active |
-| `experiment_L2.md` | L2, QAT on the weights only. Written, not yet run | Active |
+| `experiment_L2.md` | L2, QAT on the weights only. Measured on MNIST and MNIST-1D | Active |
+| `experiment_block.md` | The weight blocking: two 1D copies against a 16 by 16 tile and a 4 by 4 tile. Measured on MNIST | Active |
+| `experiment_L3.md` | L3, FP4 backward pass with the weights, the activations and the optimizer in float. Written, not yet run | Active |
 | `contract.md` | The training datapath: model, optimizer, rounding points, metrics | Not written |
 | `ladder.md` | The experiments L0 to L8, one factor per rung | Not written |
 | `results.md` | The measured curve of every rung, with the seed spread | Not written |
