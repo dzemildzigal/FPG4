@@ -462,4 +462,53 @@ The pre-registered rule needs both conditions on **both** datasets, so a row is 
 |training recovers most of the PTQ loss|1.2 to 2.0 points in L2, 2.5 to 3.6 in L2a on MNIST, and 6.5 to 10.3 in L2a on MNIST-1D|
 |the input is not the worst tensor|it is the best on MNIST and the worst on MNIST-1D, so it must be measured per dataset|
 |the zero-block path is a real path|6 zero blocks on MNIST activations, 304 on MNIST-1D, 0 on weights anywhere|
-|the optimizer cannot follow the grid|96 to 99 percent of the weight elements do not move their FP4 value per step, and 256 to 870 steps per epoch have the whole matrix frozen|
+|the optimizer cannot follow the grid|96 to 99 percent of the weight elements do not move their FP4 value per step, and the whole matrix is bit-identical to the step before in up to 44 percent of the steps (W3 on MNIST under `f6-e5m3`, 206 of 469)|
+
+## The curves
+
+Two figures per dataset. The x axis is the training epoch, 1 to 10. The y axis is either the cross entropy loss or the accuracy. Each figure holds six curves: three rungs, each with its training curve dashed and its test curve solid.
+
+|file|content|
+|-|-|
+|`out/curves_mnist_loss.png`|MNIST, loss against epoch, L0 and L2 and L2a|
+|`out/curves_mnist_acc.png`|MNIST, accuracy against epoch, the same three runs|
+|`out/curves_mnist1d_loss.png`|MNIST-1D, loss against epoch|
+|`out/curves_mnist1d_acc.png`|MNIST-1D, accuracy against epoch|
+|`out/curves_<dataset>.json`|the same numbers, mean per epoch, so the figures are not the only record|
+|`python/l0_history.json`|the L0 per-epoch history of the three seeds below|
+|`python/curves.py`|the script that draws all of them. **It trains nothing**|
+
+### Two limits of the data, and neither is filled in
+
+**1. The figures average three seeds, not ten.**
+The L2 and L2a runs store their full per-epoch history for all ten seeds. The L0 runs do not: `train()` returns the history and prints one line per epoch, but the L0 runs never saved the return value. The only surviving L0 per-epoch record is the log of `python/fp32_probe.py`, which trained L0 in float32 for the seeds 42, 4242 and 424242 with the same protocol. That log was parsed into `python/l0_history.json`. The figures therefore use the three seeds that all three rungs share, so the gap between the curves is the rung and not the seed set.
+
+**2. L2 and L2a have no training-loss curve.**
+`python/l2_sweep.py` stored `test_loss`, `test_acc` and `train_acc` per epoch. It did not store `train_loss`, so that curve does not exist anywhere and it is not drawn. The loss figure therefore holds L0 train, L0 test, L2 test and L2a test. Train loss for L2 and L2a needs one 10-epoch run per rung to produce, and it has not been run.
+
+### The configuration drawn
+
+The rule is mechanical: the highest mean final test accuracy over the ten available seeds, and the lower mean final test loss when two configurations sit inside 0.01 accuracy points of each other.
+
+|dataset|rung|config drawn|
+|-|-|-|
+|MNIST|L2|`f6-e5m3`, 94.80 percent, loss 0.1799|
+|MNIST|L2a|`f6-e6m2`, 94.10 percent, loss 0.2001|
+|MNIST-1D|L2|`f6-e5m3`, 63.55 percent, loss 0.9242|
+|MNIST-1D|L2a|`f6-e5m3`, 62.66 percent, loss 0.9488|
+
+**The best configuration is not the same on both MNIST rungs.** `f6-e5m3` wins L2 and `f6-e6m2` wins L2a, and the two are inside 0.3 points of each other at both rungs. That is the same "no decision" that this document already recorded.
+
+### What the curves show
+
+|observation|MNIST|MNIST-1D|
+|-|-|-|
+|the order of the three loss curves|L0 lowest, then L2, then L2a, and it never inverts|the same|
+|the order of the three accuracy curves|the same, and it never inverts|the same|
+|the last-epoch slope of the test loss|falling on all three rungs|falling on all three rungs|
+|the training gap of L2 at epoch 10|0.87 points|0.26 points|
+|the training gap of L2a at epoch 10|0.52 points|0.05 points|
+
+**"Training gap" is train accuracy minus test accuracy at the last epoch.** It is the usual first sign of overfitting. It stays under one point everywhere, and it is smaller on the quantized rungs than on L0, so the grid regularizes.
+
+**Nothing has flattened at epoch 10.** A 20-epoch probe on one MNIST seed gave both L0 and L2 about 0.8 more points, so the absolute numbers in this document are about 0.8 points below what this architecture reaches. The gaps between the rungs did not change in that probe, so the comparisons below stand.
