@@ -24,9 +24,16 @@ Run from python/:
     uv run python l3.py mnist 1          # the first seed only, a smoke run
     uv run python l3.py mnist1d
 
-A finished run is written to out/l3/<dataset>/ and never repeated, so the sweep can be stopped and
-restarted. The reported accuracy is the accuracy of the trained model. In L3 the trained model is the
+A finished run is written to out/<rung>/<dataset>/ and never repeated, so the sweep can be stopped and
+restarted. The reported accuracy is the accuracy of the trained model. In L3 and L4 the trained model is the
 float model, because nothing is stored in FP4.
+
+The third argument picks the rounding rule, and it names the rung:
+
+    uv run python l3.py mnist 10 rtn      rung L3, round to nearest. The default
+    uv run python l3.py mnist 10 sr       rung L4, stochastic rounding. Everything else is identical
+
+The two rungs share this file on purpose: L4 is L3 with one change, and one file makes that checkable.
 """
 import json
 import os
@@ -43,7 +50,9 @@ EPOCHS = 10
 BATCH = 128
 BLOCK = 16                 # samples per block along the batch
 WEIGHTS = ("W1", "W2", "W3")
-CELLS = {"L3-D": False, "L3-DA": True}
+# cell -> (round the activation operands of dW, round the operands of dA). The rung prefix comes from the
+# rounding rule: L3 is round to nearest, L4 is stochastic rounding, and the two rungs differ in nothing else.
+CELL_KINDS = {"D": (False, False), "DA": (True, False), "DAW": (True, True)}
 
 CONFIGS = {
     "a6-e6m2": (q.e6m2, "L1b"),
@@ -58,15 +67,19 @@ DOCS = os.path.join(HERE, "..", "docs")
 
 DATASET = sys.argv[1] if len(sys.argv) > 1 else "mnist"
 N_SEEDS = int(sys.argv[2]) if len(sys.argv) > 2 else len(SEEDS)
+ROUNDING = sys.argv[3] if len(sys.argv) > 3 else "rtn"
 assert DATASET in DATASETS, f"unknown dataset {DATASET}, choose from {list(DATASETS)}"
-OUT = os.path.join(HERE, "..", "out", "l3", DATASET)
+assert ROUNDING in ("rtn", "sr"), f"unknown rounding {ROUNDING}, choose rtn or sr"
+RUNG = "L3" if ROUNDING == "rtn" else "L4"
+CELLS = {f"{RUNG}-{k}": v for k, v in CELL_KINDS.items()}
+OUT = os.path.join(HERE, "..", "out", RUNG.lower(), DATASET)
 
 
 def result_path(cell, config, seed):
     return os.path.join(OUT, f"{cell}_{config}_seed{seed}.json")
 
 
-def quantize_batch(T, table, rule):
+def quantize_batch(T, table, rule, rng=None):
     """Round a tensor of shape (batch, features) to FP4, with one 8-bit scale per 16 samples.
 
     The weight-gradient GEMM sums over the batch, so the block runs along the batch. T is cut into
@@ -81,8 +94,39 @@ def quantize_batch(T, table, rule):
     if n % BLOCK != 0:
         raise ValueError(f"batch must be a multiple of {BLOCK}, got {n}")
     blocks = np.ascontiguousarray(T.reshape(n // BLOCK, BLOCK, K).transpose(0, 2, 1))
-    Tq, _, idx, _, _ = q.quantize_blocks(blocks, table, rule)
+    quant = q.quantize_blocks if rng is None else (lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng))
+    Tq, _, idx, _, _ = quant(blocks, table, rule)
     return Tq.transpose(0, 2, 1).reshape(n, K), idx, blocks
+
+
+def quantize_axis(T, axis, table, rule, rng=None):
+    """Round T to FP4 with one 8-bit scale per 16 values along `axis`, padding the axis to 16.
+
+    The block must lie along the axis the GEMM sums over, so the axis is the argument. When that axis is
+    shorter than 16, the block is filled with zeros. The zero fill does not change the block maximum, so
+    the scale belongs to the real values only, and the padded products add nothing to the block sum.
+    Layer 3 is the case: the gradient-down GEMM sums over 10 outputs, so its blocks hold 10 values and 6
+    zeros. That is the shape the fabric runs, so the padding is here and not a special case.
+
+    rng is None for round to nearest and a numpy Generator for stochastic rounding. That is the only
+    difference between rung L3 and rung L4.
+
+    Returns (Tq, idx, blocks) with Tq in the layout of T.
+    """
+    n = T.shape[axis]
+    move = np.moveaxis(T, axis, -1)                       # (..., n)
+    lead = move.shape[:-1]
+    padded = -(-n // BLOCK) * BLOCK
+    if padded != n:
+        z = np.zeros(lead + (padded,), dtype=move.dtype)
+        z[..., :n] = move
+        move = z
+    nb = padded // BLOCK
+    blocks = np.ascontiguousarray(move.reshape(-1, nb, BLOCK))   # (rows, blocks, 16)
+    quant = q.quantize_blocks if rng is None else (lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng))
+    Tq, _, idx, _, _ = quant(blocks, table, rule)
+    out = Tq.reshape(lead + (padded,))[..., :n]
+    return np.moveaxis(out, -1, axis), idx, blocks
 
 
 def vanished(blocks, idx):
@@ -96,7 +140,7 @@ def _cos(u, v):
     return float(np.sum(u * v) / (nu * nv)) if nu > 0 and nv > 0 else float("nan")
 
 
-def backward_l3(p, y, cache, table, rule, round_acts, telemetry=False):
+def backward_l3(p, y, cache, table, rule, round_acts, round_weights, telemetry=False, rng=None):
     """The backward pass of L3. Returns grads, and a record when telemetry is True.
 
     What is rounded, and what is not:
@@ -106,7 +150,15 @@ def backward_l3(p, y, cache, table, rule, round_acts, telemetry=False):
         dZ2          rounded -> dW2 = A1.T @ dZ2
         dA1 = dZ2 @ W2.T        float
         dZ1          rounded -> dW1 = X.T @ dZ1
-        A2, A1, X    rounded only in cell L3-DA
+        dA2 = dZ3 @ W3.T and dA1 = dZ2 @ W2.T
+                     in cell L3-DAW both operands are rounded along N, the axis those GEMMs sum over.
+                     dZ is then rounded TWICE in one step: once along the batch for dW, once along N for
+                     dA. One scale per 16 values cannot serve two axes, so a 1D format needs two copies
+                     of dZ. That is the second rounding, and L3-DAW pays it
+        A2, A1, X    rounded in cells L3-DA and L3-DAW
+        W2, W3       rounded in cell L3-DAW only, along N, and used only in the gradient-down GEMM. The
+                     forward pass keeps the float weight, so L3-DAW has a float forward and a fully FP4
+                     backward
         bias grads   float. They are sums of dZ, not GEMM operands
 
     The float gradient is computed in the same call when telemetry is True, so the cosine against it
@@ -118,22 +170,37 @@ def backward_l3(p, y, cache, table, rule, round_acts, telemetry=False):
     rec = {"vanished": {}, "cos": {}, "sqnr": {}} if telemetry else None
 
     dZ3 = (P - Y) / B
-    dA2 = dZ3 @ p["W3"].T                      # float, before any rounding
+    # The gradient-down path. In L3-DAW it uses dZ and W rounded along N, the axis of that GEMM.
+    if round_weights:
+        q3n, i3, b3 = quantize_axis(dZ3, 1, table, rule, rng)
+        dA2 = q3n @ quantize_axis(p["W3"], 1, table, rule, rng)[0].T
+        if telemetry:
+            rec["vanished"]["dZ3 along N"] = vanished(b3, i3)
+            rec["sqnr"]["dZ3 along N"] = q.sqnr(dZ3, q3n)
+    else:
+        dA2 = dZ3 @ p["W3"].T                  # float, before any rounding
     dZ2 = dA2 * relu_derivative(Z2)
-    dA1 = dZ2 @ p["W2"].T
+    if round_weights:
+        q2n, i2, b2 = quantize_axis(dZ2, 1, table, rule, rng)
+        dA1 = q2n @ quantize_axis(p["W2"], 1, table, rule, rng)[0].T
+        if telemetry:
+            rec["vanished"]["dZ2 along N"] = vanished(b2, i2)
+            rec["sqnr"]["dZ2 along N"] = q.sqnr(dZ2, q2n)
+    else:
+        dA1 = dZ2 @ p["W2"].T
     dZ1 = dA1 * relu_derivative(Z1)
     float_d = {"dZ3": dZ3, "dZ2": dZ2, "dZ1": dZ1}
     float_a = {"A2": A2, "A1": A1, "X": X}
 
     qd, qa = {}, {}
     for name, T in float_d.items():
-        qd[name], idx, blocks = quantize_batch(T, table, rule)
+        qd[name], idx, blocks = quantize_batch(T, table, rule, rng)
         if telemetry:
             rec["vanished"][name] = vanished(blocks, idx)
             rec["sqnr"][name] = q.sqnr(T, qd[name])
     if round_acts:
         for name, T in float_a.items():
-            qa[name], idx, blocks = quantize_batch(T, table, rule)
+            qa[name], idx, blocks = quantize_batch(T, table, rule, rng)
             if telemetry:
                 rec["vanished"][name] = vanished(blocks, idx)
                 rec["sqnr"][name] = q.sqnr(T, qa[name])
@@ -154,12 +221,21 @@ def backward_l3(p, y, cache, table, rule, round_acts, telemetry=False):
         fg = {"W3": A2.T @ dZ3, "W2": A1.T @ dZ2, "W1": X.T @ dZ1}
         for k in WEIGHTS:
             rec["cos"][k] = _cos(grads[k], fg[k])
+        if round_weights:
+            # The two gradient-down tensors against the float ones: the error of the only part of the
+            # backward pass that L3-DA never rounded.
+            rec["cos"]["dA2"] = _cos(dA2, dZ3 @ p["W3"].T)
+            rec["cos"]["dA1"] = _cos(dA1, dZ2 @ p["W2"].T)
     return grads, rec
 
 
 def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbose=False):
     table, rule = CONFIGS[config]
-    round_acts = CELLS[cell]
+    round_acts, round_weights = CELLS[cell]
+    # srng is the stochastic rounding generator. It is separate from the shuffle generator so that the
+    # shuffle order of a seed does not change when the rounding rule changes. That keeps L3 and L4 paired:
+    # the same seed sees the same batches in the same order, and only the rounding differs.
+    srng = np.random.default_rng([seed, 1]) if ROUNDING == "sr" else None
     rng = np.random.default_rng(seed)
     p = init_params(seed, dtype=DTYPE)
     m = {k: np.zeros_like(v) for k, v in p.items()}
@@ -168,8 +244,7 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
     history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": [],
                "vanished": [], "cos": [], "sqnr": []}
     for epoch in range(epochs):
-        ep = {"vanished": {k: [] for k in WEIGHTS}, "cos": {k: [] for k in WEIGHTS},
-              "sqnr": {k: [] for k in WEIGHTS}}
+        ep = {"vanished": {}, "cos": {}, "sqnr": {}}
         indices = np.arange(X.shape[0])
         rng.shuffle(indices)
         for start in range(0, X.shape[0], batch_size):
@@ -179,13 +254,14 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
             # Telemetry only on the first batch of the epoch, so the epochs are comparable and the
             # cost of the second float gradient stays at one batch per epoch.
             tel = start == 0
-            grads, rec = backward_l3(p, y_batch, cache, table, rule, round_acts, telemetry=tel)
+            grads, rec = backward_l3(p, y_batch, cache, table, rule, round_acts, round_weights,
+                                     telemetry=tel, rng=srng)
             if tel:
                 for name in rec["vanished"]:
                     ep["vanished"].setdefault(name, []).append(rec["vanished"][name])
                     ep["sqnr"].setdefault(name, []).append(rec["sqnr"][name])
-                for k in WEIGHTS:
-                    ep["cos"][k].append(rec["cos"][k])
+                for k in rec["cos"]:
+                    ep["cos"].setdefault(k, []).append(rec["cos"][k])
             p, m, v = adam(p, grads, m, v, t)
             t += 1
         train_loss, train_acc = evaluate(p, X, y)
@@ -199,11 +275,11 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
         history["cos"].append({k: float(np.mean(v_)) for k, v_ in ep["cos"].items() if v_})
         history["sqnr"].append({k: float(np.mean(v_)) for k, v_ in ep["sqnr"].items() if v_})
         if verbose:
-            print(f"{epoch:2d} loss {train_loss:.4f} acc {100 * train_acc:6.2f} "
-                  f"test {test_loss:.4f} {100 * test_acc:6.2f} "
-                  f"cos {history['cos'][-1]['W1']:.4f} {history['cos'][-1]['W2']:.4f} "
-                  f"{history['cos'][-1]['W3']:.4f} "
-                  f"vanished {100 * history['vanished'][-1]['W2']:.2f}%", flush=True)
+            c = history["cos"][-1]
+            print(f"{epoch:2d} loss {train_loss:.4f} test {test_loss:.4f} {100 * test_acc:6.2f} "
+                  f"cos {c.get('W1', float('nan')):.4f} {c.get('W2', float('nan')):.4f} "
+                  f"{c.get('W3', float('nan')):.4f} dA {c.get('dA2', float('nan')):.4f} "
+                  f"{c.get('dA1', float('nan')):.4f}", flush=True)
     return p, history
 
 
@@ -222,7 +298,7 @@ def run_cell(cell, config, seed, data, X_test, y_test):
 
 
 def paired(a, b):
-    """The pre-registered rule of docs/experiment_L3.md: 8 of 10 seeds agree, and |mean| > 2 se."""
+    """The pre-registered rule: 8 of 10 seeds agree, and |mean| > 2 se. Same rule in L3 and L4."""
     d = np.asarray(a) - np.asarray(b)
     n = len(d)
     mean = float(d.mean())
@@ -240,7 +316,7 @@ def draw(seeds):
     import matplotlib.pyplot as plt
 
     epochs = np.arange(1, EPOCHS + 1)
-    colour = {"L3-D": "#1f77b4", "L3-DA": "#d62728"}
+    colour = {"L3-D": "#1f77b4", "L3-DA": "#d62728", "L3-DAW": "#2ca02c"}
     fig, axes = plt.subplots(1, 2, figsize=(13.0, 5.2))
     for ax, key, ylabel in ((axes[0], "loss", "cross entropy loss"),
                             (axes[1], "acc", "accuracy, percent")):
@@ -266,17 +342,19 @@ def draw(seeds):
         ax.grid(alpha=0.25)
         ax.set_xticks(epochs)
     axes[0].legend(fontsize=7.0, ncol=1, loc="upper right")
-    fig.suptitle(f"{DATASET}: rung L3, FP4 operands of the weight-gradient GEMM. Dashed is train, solid is "
+    fig.suptitle(f"{DATASET}: rung {RUNG}, FP4 operands of the backward GEMMs. Dashed is train, solid is "
                  f"test. Each line is the mean over {len(CONFIG_NAMES)} configs and {len(seeds)} seeds, "
                  f"band is plus or minus one standard error", fontsize=8.6)
-    fig.text(0.012, 0.045, f"docs/experiment_L3_{DATASET}_curves.png  |  runs: out/l3/{DATASET}, "
+    fig.text(0.012, 0.045, f"docs/experiment_{RUNG}_{DATASET}_curves.png  |  runs: out/{RUNG.lower()}/{DATASET}, "
                           f"{len(seeds)} seeds x {len(CONFIG_NAMES)} configs x 2 cells  |  "
                           f"forward and optimizer float32, 10 epochs, batch {BATCH}", fontsize=7.0, color="#555555")
-    fig.text(0.012, 0.020, "L3-D = deltas only. L3-DA = deltas and activation operands  |  "
+    fig.text(0.012, 0.020, f"{RUNG}, {'round to nearest' if ROUNDING == 'rtn' else 'stochastic rounding'}. "
+                           "D = deltas only. DA = deltas and activations. DAW = also the "
+                           "gradient-down operands  |  "
                            "dashed = train, solid = test, band = plus or minus one standard error",
              fontsize=7.0, color="#555555")
     fig.tight_layout(rect=(0, 0.080, 1, 0.95))
-    path = os.path.join(DOCS, f"experiment_L3_{DATASET}_curves.png")
+    path = os.path.join(DOCS, f"experiment_{RUNG}_{DATASET}_curves.png")
     fig.savefig(path, dpi=130)
     plt.close(fig)
     print(f"  wrote {path}", flush=True)
@@ -296,7 +374,8 @@ def main():
     X_test, y_test = data[2], data[3]
     seeds = SEEDS[:N_SEEDS]
     runs = len(CELLS) * len(CONFIG_NAMES) * len(seeds)
-    print(f"dataset {DATASET}: {len(seeds)} seeds, {len(CONFIG_NAMES)} configurations, cells "
+    print(f"rung {RUNG} ({'round to nearest' if ROUNDING == 'rtn' else 'stochastic rounding'}), "
+          f"dataset {DATASET}: {len(seeds)} seeds, {len(CONFIG_NAMES)} configurations, cells "
           f"{list(CELLS)}, {runs} runs, {EPOCHS} epochs, batch {BATCH}", flush=True)
 
     # The reference: the saved L0 float weights, evaluated here and not retrained.
@@ -332,29 +411,30 @@ def main():
             dec = "no decision" if r["winner"] is None else f"{'L0' if r['winner'] == 'b' else cell} better"
             print(f"{cell:>7} {config:>9} {r['mean']:10.2f} {r['se']:7.2f} {r['agree']:>3}/{r['n']:<2} {dec:>12}")
 
-    print(f"\ncell L3-DA against L3-D, same seed")
+    print(f"\ncell {RUNG}-DA against {RUNG}-D, same seed")
     for config in CONFIG_NAMES:
-        a = [read("L3-DA", config, s)["test_acc"][-1] for s in seeds]
-        b = [read("L3-D", config, s)["test_acc"][-1] for s in seeds]
+        a = [read(f"{RUNG}-DA", config, s)["test_acc"][-1] for s in seeds]
+        b = [read(f"{RUNG}-D", config, s)["test_acc"][-1] for s in seeds]
         r = paired(a, b)
-        dec = "no decision" if r["winner"] is None else f"{'L3-DA' if r['winner'] == 'a' else 'L3-D'} better"
+        dec = "no decision" if r["winner"] is None else f"{RUNG}-DA better" if r["winner"] == "a" else f"{RUNG}-D better"
         print(f"{config:>9} {r['mean']:10.2f} {r['se']:7.2f} {r['agree']:>3}/{r['n']:<2} {dec:>12}")
 
     print(f"\nrounded operands, mean over the last epoch and over every seed and configuration")
     for cell in CELLS:
-        names = ["dZ3", "dZ2", "dZ1"] + (["X", "A1", "A2"] if CELLS[cell] else [])
+        first = read(cell, CONFIG_NAMES[0], seeds[0])
         print(f"  {cell}")
-        print(f"  {'tensor':>8} {'SQNR dB':>9} {'vanished':>10} {'cosine, first batch':>20}")
-        for name in names:
+        print(f"  {'tensor':>16} {'SQNR dB':>9} {'vanished':>10}")
+        for name in first["sqnr"][-1]:
             sq = [read(cell, c, s)["sqnr"][-1].get(name) for c in CONFIG_NAMES for s in seeds]
             vn = [read(cell, c, s)["vanished"][-1].get(name) for c in CONFIG_NAMES for s in seeds]
             sq = [x for x in sq if x is not None]
             vn = [x for x in vn if x is not None]
-            print(f"  {name:>8} {np.mean(sq):9.2f} {100 * np.mean(vn):9.2f}%")
-        for name in WEIGHTS:
+            print(f"  {name:>16} {np.mean(sq):9.2f} {100 * np.mean(vn):9.2f}%")
+        print(f"  gradient cosine against the float gradient of the same step, first batch")
+        for name in sorted(first["cos"][-1]):
             cs = [read(cell, c, s)["cos"][-1].get(name) for c in CONFIG_NAMES for s in seeds]
             cs = [x for x in cs if x is not None]
-            print(f"  {name:>8} {'':>9} {'':>10} {np.mean(cs):20.4f}")
+            print(f"  {name:>16} {np.mean(cs):9.4f}")
 
     draw(seeds)
 

@@ -12,6 +12,38 @@ PAYLOAD_CODES = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
 # The largest product is 12 * 12 = 144, which needs 8 bits. Nothing rounds in that product, so there is no FP4 multiplier.
 PAYLOAD_INTS = (2 * PAYLOAD_CODES).astype(np.int32)
 
+def payload_index_sr(Wb, scales, rng):
+    """The payload code under stochastic rounding. Same shapes as payload_index.
+
+    Round to nearest picks the closer of two neighbouring codes every time, so a value in the middle of a
+    step always moves to the same side. Stochastic rounding picks the upper code with probability equal to
+    the value's position inside the step, so the expected decoded value is the input:
+
+        t = (r - lower) / (upper - lower),   take upper with probability t
+
+    The expectation is the whole reason for it. Round to nearest has no error on average over a random
+    spread, but it does have a bias for a value that never crosses a step, and that is the frozen-weight
+    problem: a float master moves, the FP4 value does not, and the update is lost. SR gives the update a
+    chance proportional to its size.
+
+    Two edges are not stochastic. A value at or above the top code clips to code 7, the same as round to
+    nearest, because clipping is not a rounding decision. A value at or below code 0 stays at 0.
+    """
+    r = np.abs(Wb) / scales                                     # (rows, blocks, 16) in units of the scale
+    r = np.where(np.isfinite(r), r, 0.0)
+    # The largest code at or below r. codes[0] is 0.0, so the index is never negative.
+    lo = np.clip(np.searchsorted(PAYLOAD_CODES, r, side="right") - 1, 0, len(PAYLOAD_CODES) - 1)
+    hi = np.minimum(lo + 1, len(PAYLOAD_CODES) - 1)
+    a, b = PAYLOAD_CODES[lo], PAYLOAD_CODES[hi]
+    span = b - a
+    t = np.where(span > 0, (r - a) / np.where(span > 0, span, 1.0), 1.0)
+    t = np.clip(t, 0.0, 1.0)
+    up = rng.random(r.shape) < t
+    # At the top code there is no code above, so the decision is the clip and not a draw.
+    idx = np.where(hi > lo, np.where(up, hi, lo), lo)
+    return idx.astype(np.int64)
+
+
 def payload_index(Wb, scales):
     # The payload code of every element: the index (0..7) of the closest PAYLOAD_CODES value.
     # Wb is (rows, blocks, 16), scales is (rows, blocks, 1), the result is (rows, blocks, 16) int64.
@@ -155,6 +187,21 @@ def quantize_blocks(B, table, rule="L1b"):
     scale4, scale_code4 = encode_scale(amax / 4.0, table) # block scale that puts amax at payload code 4
     counters = scale_counters(amax, table)
     B_hat, scale_codes, idx, scales = four6(B, scale6, scale4, scale_code6, scale_code4, rule)
+    return B_hat, scale_codes, idx, scales, counters
+
+
+def quantize_blocks_sr(B, table, rule, rng):
+    """quantize_blocks with stochastic rounding of the payload. The scale rule is unchanged.
+
+    The scale is chosen exactly as in quantize_blocks: amax/6, or the four6 comparison of amax/6 against
+    amax/4. That comparison is a decision about the scale, and L4 changes the rounding of the payload only,
+    so the comparison keeps the round-to-nearest error. Then the payload is drawn with SR.
+
+    Returns the same 5 values as quantize_blocks.
+    """
+    B_hat_rtn, scale_codes, idx_rtn, scales, counters = quantize_blocks(B, table, rule)
+    idx = payload_index_sr(B, scales, rng)
+    B_hat = decode_payload(B, idx, scales)
     return B_hat, scale_codes, idx, scales, counters
 
 
