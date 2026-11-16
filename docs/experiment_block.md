@@ -293,6 +293,127 @@ Share of elements where the two copies hold a different value, last epoch, mean 
 This is arm B2. The blockers on the choice were cost and structure, because the accuracy data does
 not separate the tile shapes at this model size.
 
+## The store this settles, inference against training
+
+One table, every stored tensor, with the blocking it uses in each pass:
+
+| Tensor | At inference | In training, forward pass | In training, backward pass |
+|-|-|-|-|
+| W1, 784 by 16 | one scale per 16 inputs, 784 scales | the same | not an operand. There is no layer below W1, and X is data |
+| W2, 16 by 16 | one 16 by 16 tile, 1 scale | the same tile, the same values | the same tile, read as W.T. One scale per 16 outputs |
+| W3, 16 by 10 | one 16 by 16 tile, 1 scale | the same | the same |
+| X, A1, A2 | one scale per 16 features, so one scale per sample at 16 wide | the same | the weight-gradient GEMM needs 16 samples per block. **Not decided** |
+| dZ3, dZ2, dZ1 | they do not exist | they do not exist | 16 neurons per block for the gradient-down GEMM. **Not decided** |
+| the accumulator | 48 bits, one binary point per layer | the same | the same |
+| the biases | the accumulator's 48-bit format, never FP4 | the same | the same |
+
+Three statements that this table corrects:
+
+1. **"Only the weights are quantized" is not right.** At inference both operands of every multiply are on
+   the FP4 grid. A block of 16 activations has its own 8-bit scale, exactly like a block of 16 weights.
+   What is true: an activation never has a float master. It leaves the 48-bit accumulator and the encoder
+   rounds it once, in the same pass. The accumulator format is the output side of the GEMM. It is not an
+   exemption from quantization.
+2. **W1 stays blocked along K in training too.** It has no gradient-down GEMM, so no second blocking
+   exists for it, and the 16 by 16 tile measured no accuracy gain while costing 0.74 to 2.29 dB of SQNR.
+3. **The block shape of the activations and the gradients is not settled here.** This experiment kept them
+   in float, that is the L2 scope. Their second blocking is the L5 question, with three measured or
+   named options: one rounding from the wide value, two roundings from the FP4 store, or 16 by 16 tiles
+   for the activations.
+
+**The mode does not change the store.** For W2 and W3 the same 16 by 16 tile serves both passes and
+both modes, so there is no conversion at a mode change. The bits, from `python/blocks_per_step.py`:
+
+| Layout | W1 | W2 | W3 | Total |
+|-|-:|-:|-:|-:|
+| all three blocked along K | 56,448 | 1,152 | 720 | 58,320 bits |
+| W2 and W3 as one tile, W1 along K | 56,448 | 1,032 | 648 | 58,128 bits |
+
+The tile saves 192 bits, which is 0.33%. The reason to use it is the equal values in both passes, not the
+bits. The reason not to switch shape between modes is that a store with two shapes needs two encoders and
+a conversion step at every mode change.
+
+## In production: inference most of the time, training occasionally
+
+### The two modes, per sample of a batch of 128, 4 lanes, encoder at 4 cycles per block
+
+From `python/blocks_per_step.py`:
+
+| Mode | Block-MACs per sample | MAC cycles | Encoder cycles | What sets the time |
+|-|-:|-:|-:|-|
+| inference, the input pre-encoded | 810 | 202.5 | 8 | the MAC |
+| inference, the input encoded online | 810 | 202.5 | 204 | the encoder |
+| training, forward and both backward GEMMs | 1,652 | 413 | 34.5 | the MAC |
+| training, plus the weight re-encode | 1,652 | 413 | 59.8 | the MAC |
+
+- The input `X` is 784 wide, so it is 49 blocks per sample. That is why the encoder overtakes the MAC in
+  inference unless the input arrives pre-encoded. `experiment_L2.md` already pre-encodes it, and proves
+  that pre-encoding gives the same values.
+- Training does 4 times the block-MACs of inference, and it adds the weight re-encode. So the device is
+  sized by the MAC, and inference has the encoder as its own limit.
+
+### What the tile costs the datapath: nothing
+
+A lane consumes 16 values that share one scale, along the axis the GEMM reduces over.
+
+| Layout | What a lane sees in the forward pass | What a lane sees in the gradient-down pass | Datapath |
+|-|-|-|-|
+| 16 values along K | one block of a column of W | not used | one `S` sum, one scale product |
+| one 16 by 16 tile | one column of the tile: 16 values, one scale | one row of the tile: 16 values, the same scale | one `S` sum, one scale product |
+| one 4 by 4 tile | four scales inside the 16 values | four scales | four `S` sums, four scale products |
+
+So **1D and 16 by 16 are the same datapath with a different memory layout and a different encoder
+grouping.** 4 by 4 is not: it changes the lane.
+
+That is the production answer. The block shape is a field of the weight store, not a hardware mode. The
+device does not need a mode bit to choose it.
+
+### The conversion price, measured
+
+A model trained somewhere else, in float, converted to FP4. Weights only, activations float, whole test
+set, from `python/tile_probe.py`:
+
+MNIST, 10 seeds, test accuracy in percent:
+
+| Layout | a6-e6m2 | f6-e6m2 | a6-e5m3 | f6-e5m3 |
+|-|-:|-:|-:|-:|
+| float, no quantization | 95.01 | 95.01 | 95.01 | 95.01 |
+| 1D, all three matrices | 93.25 | 93.55 | 92.57 | 93.16 |
+| 16 by 16, W2 and W3 | 92.72 | 92.72 | 92.53 | 92.53 |
+| 16 by 16, all three | 92.57 | 92.57 | 92.34 | 92.34 |
+| 4 by 4, all three | 93.08 | 93.07 | 93.50 | 93.82 |
+
+MNIST-1D, 3 seeds, test accuracy in percent:
+
+| Layout | a6-e6m2 | f6-e6m2 | a6-e5m3 | f6-e5m3 |
+|-|-:|-:|-:|-:|
+| float, no quantization | 64.94 | 64.94 | 64.94 | 64.94 |
+| 1D, all three matrices | 56.77 | 58.62 | 55.51 | 55.09 |
+| 16 by 16, W2 and W3 | 53.18 | 53.18 | 55.23 | 55.23 |
+| 16 by 16, all three | 53.05 | 53.01 | 54.91 | 54.91 |
+| 4 by 4, all three | 55.91 | 58.46 | 55.64 | 59.09 |
+
+Three findings:
+
+1. **Training with the tile costs nothing. Converting to the tile costs 0.04 to 0.83 points on MNIST.**
+   That is the QAT gap: in training the weights move onto the coarse grid, and a converted model cannot.
+2. **4 by 4 pays off in the conversion path.** It is better than 16 by 16 on MNIST in all four
+   configurations and better than 1D in three of four, and on MNIST-1D it is better than 16 by 16 in all
+   four. It is the store to convert into, and it is the store that needs the four term paths.
+3. **The MNIST-1D conversion numbers are not resolved.** 3 seeds, and the spread is 2.8 to 5.7 points.
+   Two of the four rows move by less than the spread.
+
+The L1 rows in `experiment_L1.md` are the **1D store**. They are not the numbers of a 16 by 16 store. The
+difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
+
+### What this means for the two uses
+
+| Use | Block shape | Why |
+|-|-|-|
+| a model trained on FPG4 | 16 by 16 for W2 and W3, 16 along K for W1 | no drift, no second copy, and no accuracy cost |
+| a float model converted for inference | 16 along K, or 4 by 4 if the four term paths are built | a converted model cannot adapt to the coarser grid |
+| both on one device | the shape is a per-matrix field in the store | 1D and 16 by 16 cost the same datapath |
+
 ## What this experiment does not settle
 
 | Limit | Why |

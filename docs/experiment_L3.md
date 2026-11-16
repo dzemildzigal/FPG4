@@ -125,12 +125,15 @@ The vanished share is not measured yet. It needs the L3 code.
 | stochastic rounding against RTN | L4, which is this rung with one change |
 | the error of the optimizer state | L6, in both forms, see `experiment_plan.md` |
 
-## Open decisions
+## Settled before the run
 
-1. **Float width.** The ladder text says FP64. The project's simulation width is float32, and the L0
-   reference rows on disk are float32 (95.01 on MNIST, 64.98 on MNIST-1D). Running L3 in FP64 against
-   a float32 L0 row would mix two changes. The recommendation is float32 for both, and the FP64 L0
-   numbers (95.18 and 65.11) stay as the record of the width experiment.
-2. **One cell or two.** The recommendation is both, because they cost 15 minutes each and they
-   separate the loss gradient from the activation operand.
-3. **MNIST first.** The recommendation is MNIST only, then the trigger.
+| Item | Value | Where it comes from |
+|-|-|-|
+| float width | **float32**, for the weights, the activations, the optimizer and the arithmetic | decided by Dzemo. The ladder rows L2 to L5 now say float32 |
+| reference row | the L0 row in float32, 95.01 on MNIST and 64.98 on MNIST-1D | `out/` L0 weight files are float32 |
+| cells | both, L3-D and L3-DA | decided by Dzemo. They cost 15 minutes each on MNIST |
+| order | MNIST first, then the trigger for MNIST-1D | decided by Dzemo |
+
+The float64 L0 numbers, 95.18 on MNIST and 65.11 on MNIST-1D, stay as the record of the width
+experiment in `experiment_L2.md`. They are not the reference of this rung, because a float32 run
+against a float64 row would mix the width with the change under test.

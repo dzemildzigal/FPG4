@@ -6,20 +6,25 @@ All experiments will be in software, Python before RTL work starts.
 
 |ladder|what changes|what does it answer|
 |---|---|---|
-|L0|nothing, all FP64|does the model learn at all?|
-|L1|PTQ - FP4 after training|FP4 only for inference, what do we lose from FP64|
+|L0|nothing, all FP32|does the model learn at all?|
+|L1|PTQ - FP4 after training|FP4 only for inference, what do we lose from FP32|
 |L1a|FP4 w FP64 scale|what do we lose from just the payload quantization|
 |L1b/c|FP4 w E6M2/E5M3 scale rules amax/6 or four6|what do we lose from the payload and scale quantization|
-|L1d|PTQ - FP4 for weights **and activations**|what do we lose from FP64 when both **weights and activations** are quantized|
+|L1d|PTQ - FP4 for weights **and activations**|what do we lose from FP32 when both **weights and activations** are quantized|
 |L1e|L1d with a stated **datapath** (integer payload product, fixed-width accumulator, rounded scale product)|does the datapath rounding cost accuracy, and how wide must the accumulator be|
-|L2|QAT - FP4 for **weights only** of the forward pass, master **weights and activations** in FP64, backprop FP64|how does FP4 influence the forward pass in training|
-|L2a|QAT - FP4 for weights **and activations** of the forward pass, master weights in FP64, backprop FP64|how does weight+activation quantization affect the forward pass in training for full QAT|
-|L3|FP64 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap)|
-|L4|FP64 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3?|
-|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP64|does native weight and activations in FP4 train?|
+|L2|QAT - FP4 for **weights only** of the forward pass, master **weights and activations** in FP32, backprop FP32|how does FP4 influence the forward pass in training|
+|L2a|QAT - FP4 for weights **and activations** of the forward pass, master weights in FP32, backprop FP32|how does weight+activation quantization affect the forward pass in training for full QAT|
+|L3|FP32 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap)|
+|L4|FP32 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3?|
+|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train?|
 |L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains?|
 |L7|add ECO, no second tensor: the rounding error goes into the momentum|does it recover updates below 1 grid step|
 |L8|add Hadamard mixing|does outlier transformation help?|
+
+The simulation width is **float32** from L0 up: the master, the activations, the optimizer state, the
+arithmetic. The rungs L1a to L1e were measured when the width was float64, and `experiment_L1.md`
+records their numbers with that width. In the L1a row, "FP64 scale" names an exact scale with no
+8-bit code, not the simulation width.
 
 Compare N to N-1. If delta is < than seed induced variance, the change was not substantial. Always test across seeds.
 
@@ -38,7 +43,7 @@ This experiment MUST be run. It MUST NOT be decided by argument. If the answer i
 
 ## The arithmetic axes (L1e)
 
-The rungs above change which **values** sit on the FP4 grid. They do not change the **arithmetic**. In every Python rung the operands are decoded to FP64 and the product and the sum run in FP64. L1e is the first rung that changes the arithmetic.
+The rungs above change which **values** sit on the FP4 grid. They do not change the **arithmetic**. In every Python rung the operands are decoded to FP32 and the product and the sum run in FP32. L1e is the first rung that changes the arithmetic.
 
 Four separate questions, and they must be measured one at a time:
 

@@ -77,5 +77,40 @@ def main():
                   f"{sum(int(np.all(d)) for d in drops)} of {len(drops)}")
 
 
+def ptq_accuracy():
+    """What a float-trained network loses when it is deployed with each block shape.
+
+    This is the inference number, not the training number. The weights are the saved L0 float32
+    weights, quantized once, and the whole test set is evaluated. Activations stay float, so the
+    number isolates the weight blocking. It is the number that matters for a model that was trained
+    somewhere else and converted.
+    """
+    from model import evaluate
+    from train import load_dataset
+    VARIANTS = {"float, no quantization": (set(), None), "1D, all three": ({"W1", "W2", "W3"}, None),
+                "16x16, W2 and W3": ({"W2", "W3"}, "16x16"),
+                "16x16, all three": ({"W1", "W2", "W3"}, "16x16"),
+                "4x4, all three": ({"W1", "W2", "W3"}, "4x4")}
+    for dataset, seeds in (("mnist", SEEDS), ("mnist1d", SEEDS[:3])):
+        X_train, y_train, X_test, y_test = load_dataset(dataset)
+        X_test = X_test.astype(np.float32)
+        print(f"\n===== {dataset}: post-training quantization, whole test set, {len(seeds)} seeds =====")
+        print(f"{'config':>9} " + " ".join(f"{name:>20}" for name in VARIANTS))
+        for config, (table, rule) in CONFIGS.items():
+            cells = []
+            for name, (names, tile) in VARIANTS.items():
+                accs = []
+                for seed in seeds:
+                    p = load_weights(seed, dataset=dataset)
+                    pq = dict(p)
+                    for m in names:
+                        W = np.asarray(p[m], dtype=np.float64)
+                        pq[m] = (q.quantize_blocks_weights(W, table, rule)[0] if tile is None
+                                 else quantize_tiles(W, TILES[tile], table, rule)[0]).astype(p[m].dtype)
+                    accs.append(100.0 * evaluate(pq, X_test, y_test)[1])
+                cells.append(f"{np.mean(accs):8.2f} +-{np.std(accs, ddof=1):4.2f}")
+            print(f"{config:>9} " + " ".join(f"{c:>20}" for c in cells))
+
+
 if __name__ == "__main__":
-    main()
+    ptq_accuracy()
