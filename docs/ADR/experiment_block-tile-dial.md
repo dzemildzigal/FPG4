@@ -4,14 +4,15 @@
 along the reduction axis. A 16 by 16 tile fits the lane at one term, an 8 by 8 tile needs two terms, and a
 4 by 4 tile needs four. The project had to decide which tile the training datapath uses.
 
-**Decision**: The dial is recorded and the choice is pending. W1 stays blocked along K, because it has no
-gradient-down GEMM and no second blocking exists for it. W2 and W3 take a square tile, and the size of that
-tile is not settled.
+**Decision**: W1 stays blocked along K, because it has no gradient-down GEMM and no second blocking exists
+for it. W2 and W3 take a square tile. **Two shapes are carried in every measurement that has a weight store:
+4 by 4 in both passes, and 16 by 16 in training with 1D blocks at inference.** The 8 by 8 tile and the two
+1D copies are dropped. The choice between the two carried shapes is deferred to rung L5.
 
-**Status**: Pending, and one candidate survives. The 16 by 16 tile was accepted on MNIST, commit
+**Status**: **Deferred to rung L5, by Dzemo on 2026-11-16.** The 16 by 16 tile was accepted on MNIST, commit
 `0e58015`, and rejected on MNIST-1D, commit `14db604`. The 8 by 8 arm and the 4 by 4 arm on MNIST-1D
-finished on 2026-11-16. The 8 by 8 tile is rejected and the 4 by 4 tile is the only shape that passes
-both datasets. The choice is Dzemo's and it is not made.
+finished on 2026-11-16. The 8 by 8 tile is rejected, the two 1D copies are rejected, and the 4 by 4 tile is
+the only shape that passes both datasets. Two shapes are carried from now on. **The choice is not made.**
 
 **Group**: format, datapath.
 
@@ -48,6 +49,12 @@ values along the reduction axis to fit one term. A tile smaller than that costs 
    clip their largest value, and 69% to 71% of the values still differ from the forward copy. The pairing
    exists only for square matrices. Not run as a training arm. **Expected worse than the two 1D copies of ADR-025 (arm A).**
 
+**The three dials that L5 decides**: the scale rule (`amax/6` or `four6`), the scale format (UE6M2 or
+UE5M3), and the tile (4 by 4 in both passes, or 16 by 16 in training with 1D at inference). L5 is the
+first rung where the forward pass and the backward pass are both FP4, so it is the first rung where the
+tile can be compared under the conditions that matter. Rungs L3 and L4 keep float weights and float
+activations. No tile exists there and no store is read, so they are not doubled.
+
 **Argument**: On MNIST no two of these forms can be separated: every arm-to-arm gap sits between -0.40 and
 +0.01 accuracy points, and at most 2 of 4 configurations fire. Ten seeds of MNIST have no power to choose a
 weight layout. So the choice rests on MNIST-1D, and there the order is clean and monotone: 16 by 16 loses
@@ -63,7 +70,7 @@ the change is a term count per GEMM, which is a mode of the lane. It can be paid
 paths, 4,716 to 5,196 LUT6 for four lanes, against about 2,900 LUT6 for the whole engine today) or in
 cycles (one term path used four times, up to 10.5% per step on the ruler, and x 3.0 on a network where every
 layer but the first is tiled). The two prices are alternatives. The store does not change: 58,336 bits
-against 58,320 for a pure 1D store, which is 0.03%. The RTL is not written until Dzemo accepts a shape.
+against 58,320 for a pure 1D store, which is 0.03%. The RTL is not written until L5 picks one shape.
 
 **Open items that can change the choice**:
 - The ruler has layers one tile wide. W2 and W3 are one 16 by 16 tile each, so the 16 by 16 arm gave each
@@ -81,6 +88,17 @@ against 58,320 for a pure 1D store, which is 0.03%. The RTL is not written until
 `docs/experiment_block_mnist1d_curves.png`.
 
 **Related principles**: Buy accuracy with structure only when the data asks for it.
+
+**Motion against the 4 by 4 shape, and the measurement that answers it**: Dzemo raised it on 2026-11-16. A
+fine tile could lose the benefit of block floating point and move the format towards IEEE floating point,
+where one value has one exponent. The answer is in `python/granularity_probe.py`. For W2 the 4 by 4 tile
+and the 1D block both need 16 scales and 4.50 bits per value, because `ceil(K/4) * ceil(N/4)` equals
+`N * ceil(K/16)` for every aligned matrix. The two forms spend the same budget in a different shape. The
+4 by 4 tile rounds 6.94% of the non-zero values to 0 on MNIST against 7.26% for the 1D block, and its SQNR
+is 20.56 dB against 20.67 dB. The slide to one scale per value starts below 4: a 2 by 2 tile costs 1.50 more
+bits per value for 2.60 dB, and one scale per value costs 7.50 more bits for 9.66 dB. The 16 by 16 tile is
+the most efficient shape per bit, at 19.15 dB for 4.03 bits, and it is the shape that loses 2.81 points. So
+the price of the 4 by 4 shape is four terms in the lane, and the price of the 16 by 16 shape is accuracy.
 
 **Notes**: The 16 by 16 tile is free on MNIST for two reasons: the SQNR loss is small there and ten epochs of
 training absorb it. A converted float model does not get that back, so the conversion path prefers 1D or

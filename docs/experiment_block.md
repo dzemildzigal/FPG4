@@ -476,15 +476,67 @@ the block-MACs read a tile. In a network where every layer except the first is t
 trains 3.0 times slower at 4 by 4 and 1.67 times slower at 8 by 8. The area price does not depend on the
 network.
 
+### The decision Dzemo took on 2026-11-16: carry two shapes to L5
+
+**Two shapes are carried in every measurement that has a weight store, from now until rung L5:**
+
+| Carried shape | Forward pass | Backward pass | Inference | Terms per lane |
+|-|-|-|-|-:|
+| 4 by 4 in both passes | 4 by 4 tiles | 4 by 4 tiles | 4 by 4 tiles | 4 |
+| 16 by 16 in training, 1D at inference | 16 by 16 tiles | 16 by 16 tiles | 16 along K | 1 in both modes |
+
+The 8 by 8 shape is dropped. The two 1D copies are dropped. **The choice between the two carried shapes is
+deferred to L5 and it is not made.** L5 is the rung where the forward and the backward pass are both FP4,
+so it is the first rung where the two shapes can be compared under the conditions that matter.
+
+The three dials that L5 decides, recorded in `docs/experiment_plan.md`:
+
+| Dial | Settings | Where the evidence stands |
+|-|-|-|
+| the scale rule | `amax/6` or `four6` | L1c, L2 and L2a favour `f6-e5m3`; MNIST cannot decide |
+| the scale format | UE6M2 or UE5M3 | L2 and L2a favour UE5M3; ADR-011 and ADR-023 stay Pending |
+| the tile | 4 by 4 in both passes, or 16 by 16 in training with 1D at inference | measured to L2a only |
+
+**Rungs L3 and L4 are not affected.** Both keep float weights and float activations, so no weight sits on
+a grid, no tile exists, and no store is read. The two shapes first act at L5.
+
+### How far 4 by 4 is from one scale per value
+
+Dzemo's concern, 2026-11-16: a fine tile loses the benefit of block floating point and moves the format
+towards IEEE floating point, where every value has its own exponent. `python/granularity_probe.py`,
+saved L0 weights, 10 seeds, 4 configurations, 5 seconds. W2, 16 by 16:
+
+| Layout | Scales of W2 | Bits per value | Values per scale | Non-zero values the payload rounds to 0, MNIST | SQNR MNIST | SQNR MNIST-1D |
+|-|-:|-:|-:|-:|-:|-:|
+| 16 by 16 tile | 1 | 4.03 | 256 | 9.86% | 19.15 dB | 17.77 dB |
+| 8 by 8 tile | 4 | 4.12 | 64 | 8.59% | 19.47 dB | 19.11 dB |
+| 4 by 4 tile | 16 | 4.50 | 16 | 6.94% | 20.56 dB | 20.75 dB |
+| 1D block | 16 | 4.50 | 16 | 7.26% | 20.67 dB | 20.44 dB |
+| 2 by 2 tile | 64 | 6.00 | 4 | 4.61% | 23.27 dB | 23.58 dB |
+| one scale per value | 256 | 12.00 | 1 | 0.00% | 30.22 dB | 30.25 dB |
+
+| Finding | Evidence |
+|-|-|
+| **4 by 4 is not finer than the 1D store** | both spend 16 scales on W2 and 4.50 bits per value. `ceil(K/4) * ceil(N/4)` equals `N * ceil(K/16)` for every aligned matrix, because `4 * 4 = 16`. The budget is the same, spent as 4 by 4 instead of 16 by 1 |
+| 4 by 4 rounds fewer values to 0 than the 1D block | 6.94% against 7.26% on MNIST. A 4 by 4 tile holds 16 values from 4 rows, so its maximum is a tighter bound |
+| the slide towards one scale per value starts below 4 | 2 by 2 costs 1.50 more bits per value for 2.60 dB, and one scale per value costs 7.50 more bits for 9.66 dB. Above 4, one more dB costs 0.29 to 0.34 bits |
+| 16 by 16 is the most efficient shape per bit | 19.15 dB at 4.03 bits, against 20.56 dB at 4.50 bits. It is 10% smaller and 1.41 dB worse |
+| the bits are not the constraint, the term path is | the weight store is 58,336 bits for 4 by 4 against 58,128 for 16 by 16, which is 0.36%. The four term paths are 4,716 to 5,196 LUT6, which is 8.9% to 9.8% of the Z020 |
+| the SQNR probe predicts the accuracy gap between the two shapes | W2 and W3 together, MNIST-1D: the 16 by 16 tile is 2.32 dB below the 1D block and loses 2.808 points. The 4 by 4 tile is 0.36 dB below and loses 0.384 points. At 1.2 points per dB the prediction is 2.78 and 0.43, and the measurement is 2.81 and 0.38 |
+
+So the cost of the 4 by 4 shape is **four terms in the lane**. It is not a loss of block floating point, and
+it is not a move to one exponent per value: the group still holds 16 values under one scale, and the flush
+share is the same as the 1D store.
+
 ### What must run next
 
 | Run | Why | Cost |
 |-|-|-|
-| nothing for the tile shape | every setting of the dial is now measured on both datasets | 0 |
+| nothing for the tile shape | every setting of the dial is now measured on both datasets, and two shapes are carried | 0 |
 | the tile shape on a third dataset, when one exists | the slope of the loss against SQNR is a property of the dataset, and two datasets cannot fix a slope | 40 runs per shape |
 | W2 tile 4 by 4 with W3 tile 8 by 8 | not measured. The two matrices need not share a shape, and W3 is 16 by 10 so it holds 12 tiles at 4 by 4 against 16 for W2 | 40 runs |
 
-Until Dzemo accepts one shape, no tile shape is accepted for training, and the RTL is not written.
+No tile shape is accepted for training yet. The RTL is not written until L5 picks one.
 
 ## The store this settles, inference against training
 
@@ -764,7 +816,7 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 | Use | Block shape | Why |
 |-|-|-|
 | a model trained on FPG4, MNIST-like | any shape. 16 by 16 is cheapest | no drift, no second copy, and no accuracy cost on MNIST |
-| a model trained on FPG4, MNIST-1D-like | 4 by 4 for W2 and W3, 16 along K for W1 | the 16 by 16 tile loses 2.81 points and the 8 by 8 loses 1.51. 4 by 4 costs 4,716 to 5,196 LUT6 |
+| a model trained on FPG4, MNIST-1D-like | **carried, not chosen**: 4 by 4 in both passes, or 16 by 16 in training with 1D at inference | the 16 by 16 tile loses 2.81 points and the 8 by 8 loses 1.51 in training. 4 by 4 costs 4,716 to 5,196 LUT6, or three times the cycles in the serial lane |
 | a float model converted for inference | 16 along K for W1, then 4 by 4 for W2 and W3 | a converted model cannot adapt to the coarser grid, and 4 by 4 is the best converted store in 3 of 4 configurations |
 | both on one device | the shape is a per-matrix field in the store, and the term count is a per-GEMM setting of the lane | 1D and 16 by 16 use one term. 4 by 4 uses four, in area or in cycles |
 
@@ -778,6 +830,7 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 | biases | the bias store is 48 bits at the accumulator's point, so it is not blocked and not tested here. |
 | a third dataset | the slope of the accuracy loss against the SQNR price is 1.2 points per dB on MNIST-1D and 0.05 on MNIST. Two datasets cannot fix a slope, so a new dataset needs its own arm. |
 | layers wider than one tile | W2 is one 16 by 16 tile and W3 is one tile, so the 16 by 16 arm gave each matrix one scale. NVIDIA used 16 by 16 weight tiles on a 1.2B model and found them better than two 1D copies. Here they tie, A minus B2 = +0.27 with a standard error of 0.32. A wider ruler would show if the -2.81 belongs to tiny layers. |
+| the choice between 4 by 4 and 16 by 16 | deferred to L5 by Dzemo, 2026-11-16. Both shapes are carried in every measurement from now on |
 | the return from the tile to 1D | the two-store design re-rounds W2 and W3 at the end of training. The probe measures the second rounding on float weights. The accuracy of a model that trained in the tile and then returned is not measured, because the sweep did not save the final weights |
 | W2 and W3 with different shapes | not measured. W3 is 16 by 10, so a 4 by 4 grid gives it 12 scales against 16 for W2. |
 | 20 epochs | every number here is 10 epochs. A longer run may narrow or widen a gap, and the protocol stays at 10 unless a rung is ambiguous. |

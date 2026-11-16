@@ -28,6 +28,22 @@ records their numbers with that width. In the L1a row, "FP64 scale" names an exa
 
 Compare N to N-1. If delta is < than seed induced variance, the change was not substantial. Always test across seeds.
 
+## The three dials that L5 decides
+
+Decided by Dzemo, 2026-11-16. Three format questions are carried open until rung L5. L5 is the first rung
+where the forward pass and the backward pass are both FP4, so it is the first rung where all three can be
+compared under the conditions that matter.
+
+| Dial | Settings carried | What decides it | Where the evidence stands |
+|-|-|-|-|
+| the scale rule | `amax/6` (L1b) or `four6` (L1c) | accuracy of a trained model, paired by seed | `f6-e5m3` is best on L2 and L2a. MNIST cannot decide. ADR-010 |
+| the scale format | UE6M2 (`[7 sig][7 exp]`) or UE5M3 (`[8 sig][6 exp]`) | accuracy of a trained model, and the scale product width in the lane | UE5M3 is better on L2 and L2a. ADR-011 and ADR-023 stay Pending |
+| the tile | 4 by 4 in the forward and the backward pass, or 16 by 16 in training with 1D blocks at inference | accuracy on MNIST-1D, then area and cycles | 4 by 4 is the only shape that passes both datasets in training. The 16 by 16 return to 1D is measured on float weights only. ADR-026 |
+
+Two shapes are carried in every measurement that has a weight store. The 8 by 8 tile and the two 1D copies
+are dropped. Rungs L3 and L4 are not affected, because both keep float weights and float activations, so no
+tile exists and no store is read.
+
 ## L6 has two forms, and both MUST be run
 
 L6 is the first rung with no float32 parameter anywhere. Two separate questions sit in it. They must be measured one at a time, the same way every other rung is measured.
