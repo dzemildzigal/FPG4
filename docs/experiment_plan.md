@@ -15,8 +15,8 @@ All experiments will be in software, Python before RTL work starts.
 |L2|QAT - FP4 for **weights only** of the forward pass, master **weights and activations** in FP32, backprop FP32|how does FP4 influence the forward pass in training|
 |L2a|QAT - FP4 for weights **and activations** of the forward pass, master weights in FP32, backprop FP32|how does weight+activation quantization affect the forward pass in training for full QAT|
 |L3|FP32 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap). **Measured on MNIST: 66% to 81% of the delta entries vanish, and both cells stay within 0.2 points of the float row**|
-|L4|FP32 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3?|
-|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train?|
+|L4|FP32 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3? **Not run on MNIST: L3 left a gap of 0.09 points there, so there is nothing to recover. SR folds into MNIST-1D or into L5**|
+|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train? **The next rung to write. Both tile shapes run here, `docs/experiment_block.md`. It is also where the three dials are decided**|
 |L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains?|
 |L7|add ECO, no second tensor: the rounding error goes into the momentum|does it recover updates below 1 grid step|
 |L8|add Hadamard mixing|does outlier transformation help?|
