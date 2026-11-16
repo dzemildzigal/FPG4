@@ -64,6 +64,10 @@ reason the input is stored pre-encoded (`experiment_L2.md`, cost section).
 
 ## Metrics
 
+The gradient cosine is measured on the **first batch of each epoch**, not on every step. The second float
+gradient that the cosine needs costs one extra backward pass, and one batch per epoch keeps the epochs
+comparable and the cost small.
+
 | Metric | Definition | Why |
 |-|-|-|
 | final test accuracy, paired | the deployed model against the L0 row of the same seed and width | the rung answer |
@@ -90,9 +94,14 @@ No decision is a legal result. A difference smaller than the seed spread does no
 | seeds | the ten of `l2_sweep.SEEDS` |
 | epochs, batch | 10, 128 |
 | runs per cell | 40 |
-| time per run | 23 s on MNIST, 167 s on MNIST-1D, from the run file times |
-| time per cell | 15 minutes on MNIST, 1 hour 51 minutes on MNIST-1D |
-| time for both cells | 31 minutes on MNIST, 3 hours 42 minutes on MNIST-1D |
+| time per run, measured | **11 s for L3-D and 105 s for L3-DA on MNIST**, from the run file times of the seed 42 smoke run. The 23 s quoted before the run was the L2 figure and it was wrong for both cells |
+| time per cell, measured | 7 minutes for L3-D, 70 minutes for L3-DA |
+| time for both cells | about 77 minutes on MNIST |
+
+**Why L3-DA costs ten times L3-D.** The input `X` is 128 by 784 per step, and its block lies along the
+batch, so it cannot be quantized once before training: the block of 16 samples changes with every shuffle.
+The quantizer builds a distance array of (8 blocks, 784 columns, 256 scales) for every step, which is
+1.6 million values. L3-D never touches a tensor that wide.
 
 MNIST-1D runs only if a rule fires on MNIST, the same trigger as the block experiment.
 
@@ -114,7 +123,82 @@ record: L3-DA loses less than 0.5 accuracy points against L0 on MNIST, and the l
 from the seed spread. If that holds, the gradient width is not the binding constraint of the project,
 and L5's weight and activation quantization is.
 
-The vanished share is not measured yet. It needs the L3 code.
+**A units correction to the stored runs, written down instead of hidden.** The first eight runs of the
+sweep, seed 42 of both cells and all four configurations, were written with the two accuracy lists stored as
+fractions instead of percentages. The report printed them as percentages, so the seed 42 report line was
+wrong by a factor of 100. The stored lists were multiplied by 100 once, and `l3.py` now stores percentages.
+No other value changed and no run was repeated.
+
+## Results, MNIST, 10 seeds
+
+80 runs, both cells, four configurations, ten epochs. Finished 2026-11-16. The output is
+`out/l3_mnist.log`, the runs are `out/l3/mnist/`, and the figure is
+`docs/experiment_L3_mnist_curves.png`.
+
+Final test accuracy, percent, mean of the four configurations:
+
+| Row | a6-e6m2 | f6-e6m2 | a6-e5m3 | f6-e5m3 | mean |
+|-|-:|-:|-:|-:|-:|
+| L0, the reference, no rounding | 95.01 ±0.32 | 94.99 ±0.23 | 95.03 ±0.27 | 94.99 ±0.31 | 95.01 |
+| **L3-D**, deltas rounded | 95.01 ±0.32 | 94.99 ±0.23 | 95.03 ±0.27 | 94.99 ±0.31 | **95.01** |
+| **L3-DA**, deltas and activations rounded | 94.98 ±0.27 | 95.07 ±0.12 | 95.00 ±0.30 | 94.98 ±0.30 | **95.01** |
+
+Paired against L0, same seed. The rule is the pre-registered one:
+
+| Cell | Config | Mean difference | Standard error | Seeds that agree | Decision |
+|-|-|-:|-:|-:|-|
+| L3-D | a6-e6m2 | 0.00 | 0.07 | 4 of 10 | no decision |
+| L3-D | f6-e6m2 | −0.03 | 0.07 | 6 of 10 | no decision |
+| L3-D | a6-e5m3 | +0.02 | 0.05 | 6 of 10 | no decision |
+| L3-D | f6-e5m3 | −0.02 | 0.06 | 6 of 10 | no decision |
+| L3-DA | a6-e6m2 | −0.03 | 0.05 | 4 of 10 | no decision |
+| L3-DA | f6-e6m2 | +0.06 | 0.08 | 6 of 10 | no decision |
+| L3-DA | a6-e5m3 | −0.01 | 0.07 | 5 of 10 | no decision |
+| L3-DA | f6-e5m3 | −0.03 | 0.06 | 6 of 10 | no decision |
+| L3-DA against L3-D | a6-e6m2 | −0.03 | 0.04 | 6 of 10 | no decision |
+| L3-DA against L3-D | f6-e6m2 | +0.09 | 0.05 | 6 of 10 | no decision |
+| L3-DA against L3-D | a6-e5m3 | −0.03 | 0.06 | 4 of 10 | no decision |
+| L3-DA against L3-D | f6-e5m3 | −0.01 | 0.02 | 5 of 10 | no decision |
+
+**The rule did not select L3-DA over L0 and it did not reject it.** The largest mean difference in the whole
+table is 0.09 points, and its standard error is 0.05. So the statement this rung supports is an
+**equivalence bound**: on MNIST, rounding the operands of the weight-gradient GEMM to FP4 moves the final
+accuracy by less than 0.2 points, at two standard errors, in either direction.
+
+The rounded operands, last epoch, mean over every seed and configuration:
+
+| Cell | Tensor | SQNR, dB | Vanished share | Gradient cosine, first batch |
+|-|-|-:|-:|-:|
+| L3-D | `dZ3` | 25.29 | 80.63% | W1 0.9981, W2 0.9980, W3 0.9978 |
+| L3-D | `dZ2` | 23.58 | 66.64% | |
+| L3-D | `dZ1` | 23.94 | 66.26% | |
+| L3-DA | `dZ3` | 25.42 | 80.44% | W1 0.9965, W2 0.9940, W3 0.9940 |
+| L3-DA | `dZ2` | 23.40 | 66.03% | |
+| L3-DA | `dZ1` | 23.89 | 65.85% | |
+| L3-DA | `X` | 23.98 | 4.00% | |
+| L3-DA | `A1` | 20.70 | 4.03% | |
+| L3-DA | `A2` | 20.68 | 3.84% | |
+
+### What the data says
+
+| Finding | Evidence |
+|-|-|
+| **the gradient width is not the binding constraint on MNIST** | both cells land on the float accuracy, 95.01 against 95.01, and the largest paired difference is 0.09 points |
+| the activation operands add almost nothing | L3-DA against L3-D is −0.03 to +0.09, no decision in all four configurations |
+| **most delta entries send no update, and it does not matter** | 66% to 81% of the delta entries round to payload code 0, and the model is unchanged. The vanished entries are the small ones relative to their block maximum, and Adam divides each coordinate by `sqrt(v)` |
+| the vanished share does not follow the noise | `A1` has 20.70 dB of SQNR and 4% vanished. `dZ1` has 23.89 dB and 66% vanished. The share depends on the spread inside a block, the dB depends on the error norm |
+| the cosine moves with the number of rounded operands | 0.998 with the deltas alone, 0.994 with the deltas and the activations |
+| the prediction on record held | the expected effect was less than 0.5 points and not separable, from `second_rounding_probe.py`. It measured 0.09 and no decision |
+| the curves are indistinguishable by eye | `docs/experiment_L3_mnist_curves.png`. The train loss curves of the two cells lie on each other for ten epochs |
+
+### What this means for the ladder
+
+| Consequence | Detail |
+|-|-|
+| the answer to the ladder's question | most updates vanish, and on MNIST that is free. The damage of FP4 training does not come from the backward operands |
+| L4 has no gap to recover on MNIST | L3's difference from L0 is 0.09 points at most. Stochastic rounding can only recover what round to nearest loses. **This is an inference, not a measurement.** The L4 trigger should be MNIST-1D, or L5 |
+| the next constraint is the forward pass | L5 puts the weights and the activations on a grid, and the frozen-weight problem starts there. That is where `experiment_L2.md` already showed a cost: L2 94.61 to 94.80 against 95.01 |
+| MNIST-1D was not run | the protocol says it runs only if a rule fires on MNIST, and no rule fired |
 
 ## What L3 does not settle
 

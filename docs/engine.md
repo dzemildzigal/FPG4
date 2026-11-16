@@ -219,3 +219,17 @@ The order of work that follows from this document:
    and it is the only part of the pipeline that has never been designed.
 2. Fill section 4 with real numbers, in the order 3, 4, 5, 6, 7, then 1, 9.
 3. Then synthesise the whole block in rung E9.
+
+### What rung E9 must measure, item by item
+
+Dzemo asked for the clock risk of a tile to be recorded as an E9 item on 2026-11-16.
+
+| # | Item | Where the estimate lives | Why it must be measured |
+|-:|-|-|-|
+| 1 | the area of every piece of section 4 | `datapath.md` sections 4.3 to 4.8 | every LUT6 count in this project is an estimate |
+| 2 | the frequency of the lane at one term per block pair | `datapath.md` section 4.5 | the 125 MHz target is an assumption |
+| 3 | **the frequency of the lane at four terms per block pair, parallel** | `experiment_block.md`, the tile section | 4,716 to 5,196 extra LUT6 and 2 more 48-bit adder levels. The estimate is 10.4 ns against 8.0 ns, which is about 96 MHz against 125 MHz. **A tile below 16 needs this number before it can be chosen** |
+| 4 | the frequency of the lane at two terms per block pair, parallel | the same | 1 more adder level, about 9.2 ns, about 109 MHz |
+| 5 | the area and the frequency of the encoder at 8, 4, 2 and 1 cycles per block | `datapath.md` section 4.8 | the cycles per block are open, ADR-018 |
+| 6 | the area of a second term path against the area of four | the same as item 3 | the two prices are alternatives and neither is measured |
+| 7 | the possible double count of about 420 LUT6 on the alignment shifter | `datapath.md` section 4.5 | the same shifter is counted in two places |

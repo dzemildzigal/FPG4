@@ -14,7 +14,7 @@ All experiments will be in software, Python before RTL work starts.
 |L1e|L1d with a stated **datapath** (integer payload product, fixed-width accumulator, rounded scale product)|does the datapath rounding cost accuracy, and how wide must the accumulator be|
 |L2|QAT - FP4 for **weights only** of the forward pass, master **weights and activations** in FP32, backprop FP32|how does FP4 influence the forward pass in training|
 |L2a|QAT - FP4 for weights **and activations** of the forward pass, master weights in FP32, backprop FP32|how does weight+activation quantization affect the forward pass in training for full QAT|
-|L3|FP32 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap)|
+|L3|FP32 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap). **Measured on MNIST: 66% to 81% of the delta entries vanish, and both cells stay within 0.2 points of the float row**|
 |L4|FP32 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3?|
 |L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train?|
 |L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains?|
