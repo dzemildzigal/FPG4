@@ -623,8 +623,101 @@ The two-store design is the one that keeps inference at one term. Two facts abou
    different scales, finds a new maximum, and rounds again. So the model that runs at inference is a
    different function from the model that training optimized and tested. `docs/ADR/experiment_ALL-deployed-model.md`
    requires that the reported accuracy is the deployed model, so the number after the return conversion is
-   the number that counts. **It has not been measured.** The nearest measured number is the float to
-   tile conversion: 0.04 to 0.83 points on MNIST, 2.8 on MNIST-1D.
+   the number that counts. **The accuracy of a model that trained in the tile and then returned is not
+   measured.** The next section measures the second rounding on stored float weights, and the change is
+   large.
+
+### Two ideas after the tile: the return and the cached scale
+
+Both come from Dzemo, 2026-11-16. `python/cached_scale_probe.py`, saved L0 weights, 10 seeds, 4
+configurations, no training, 14 seconds. Each cell is 40 runs unless a row says otherwise. The output is in
+`out/cached_scale_probe.txt`.
+
+#### The return from a tile to 1D blocks
+
+A model trained in a tile store goes back to 1D blocks for inference. A 1D block of 16 values along K takes
+values from several tiles with several scales. The encoder finds a new amax and a new scale, and rounds
+again. The decoded tile weights are on the tile grid. They are not on the new grid, so values move.
+
+**The stand-in for a tile-trained weight is the float L0 weight put through the tile once.** It lies on the
+tile grid like a tile-trained weight. It never adapted to the tile. So this gives the noise of the second
+rounding, and a proxy for the accuracy. It does not give the accuracy of a model that trained in the tile.
+W2 and W3 only. W1 is 1D in every row.
+
+MNIST, 10 seeds, 40 runs:
+
+| Tile | Values that change on the return | SQNR, float to tile | SQNR, float to tile to 1D | Proxy accuracy, tile | Proxy accuracy, tile then 1D |
+|-|-:|-:|-:|-:|-:|
+| 16 by 16 | 20.5% | 19.27 dB | 18.82 dB | 92.53 | 92.17 |
+| 8 by 8 | 40.3% | 19.62 dB | 18.10 dB | not run | not run |
+| 4 by 4 | 54.1% | 20.60 dB | 18.09 dB | 93.36 | 91.76 |
+
+MNIST-1D, SQNR 40 runs, proxy accuracy 3 seeds times 4 configurations:
+
+| Tile | Values that change on the return | SQNR, float to tile | SQNR, float to tile to 1D | Proxy accuracy, tile | Proxy accuracy, tile then 1D |
+|-|-:|-:|-:|-:|-:|
+| 16 by 16 | 16.4% | 18.25 dB | 17.96 dB | 54.01 | 53.23 |
+| 8 by 8 | 41.9% | 19.38 dB | 17.65 dB | not run | not run |
+| 4 by 4 | 54.8% | 20.92 dB | 18.12 dB | 57.24 | 52.32 |
+
+For comparison, a direct float to 1D conversion gives SQNR 20.60 dB on MNIST and 20.57 dB on MNIST-1D, and
+proxy accuracy 93.13 and 56.50.
+
+| Finding | Evidence |
+|-|-|
+| the return changes the model | 20% of the values change at 16 by 16 and 54% at 4 by 4 |
+| the return from 4 by 4 adds noise as large as the quantization itself | the noise between the 4 by 4 weights and the returned weights is 21.6 dB on MNIST. The quantization noise is 20.6 dB |
+| the return costs 2.5 to 2.8 dB at 4 by 4 | 20.60 to 18.09 on MNIST, 20.92 to 18.12 on MNIST-1D |
+| the proxy accuracy falls | 4 by 4: -1.60 on MNIST, -4.92 on MNIST-1D. 16 by 16: -0.36 and -0.78 |
+| with a float master the return is one rounding, not two | a master quantized to 1D is the "direct" figure, 20.6 dB. Only a design with no master pays the second rounding, and no master is the long-term aim |
+
+#### The cached scale
+
+Keep 1D blocks along K for the forward pass, and keep their scales. The backward blocks reuse those scales:
+"one row's scalers become the column's scalers". The backward encoder then skips amax and snap. It runs the
+payload quantizer with a scale that was given to it.
+
+**The pairing used in the probe:** backward block `(k, nb)` takes the scale of forward block `(n = k, kb =
+nb)`. It exists only when K equals N, because only then the forward scale grid and the backward scale grid
+have the same shape. W2 is 16 by 16. W3 is 16 by 10, with 10 forward scales and 16 backward blocks, so 6
+blocks have no scale. The weights come from the float master, so each value is rounded once. That is the
+best case for the idea.
+
+W2, 40 runs:
+
+| Backward copy of W2 | SQNR MNIST | SQNR MNIST-1D | Values that differ from the forward copy, MNIST and MNIST-1D |
+|-|-:|-:|-|
+| 1D, own amax (arm A) | 20.45 dB | 20.83 dB | 69.8% and 72.6% |
+| 1D, cached forward scale | 16.64 dB | 12.22 dB | 69.1% and 71.3% |
+| 16 by 16 tile | 19.15 dB | 17.77 dB | none, one copy |
+| 8 by 8 tile | 19.47 dB | 19.11 dB | none, one copy |
+| 4 by 4 tile | 20.56 dB | 20.75 dB | none, one copy |
+
+| Event | MNIST, cached | MNIST, own amax | MNIST-1D, cached | MNIST-1D, own amax |
+|-|-:|-:|-:|-:|
+| backward blocks whose largest value is clipped | 45.9% | | 54.4% | |
+| values clipped by more than 10% | 3.46% | 0.19% | 5.82% | 0.07% |
+| non-zero values that round to 0, all blocks | 6.92% | 7.04% | 9.94% | 9.80% |
+| the same, in blocks whose scale is more than 25% too big | 9.42% | 6.95% | 15.31% | 8.73% |
+| amax of the block divided by 6 times the scale, 5th, 50th, 95th percentile | 0.53, 0.98, 1.58 | | 0.48, 1.05, 2.40 | |
+
+A ratio above 1.00 means the largest value of the block is clipped. Random normal matrices with no
+structure, 16, 64 and 256 on a side: the price against own amax is 4.15, 4.46 and 4.60 dB, and 42% of the
+backward blocks clip their largest value.
+
+| Finding | Evidence |
+|-|-|
+| it removes the return | the forward store is the 1D inference store |
+| **it keeps the forward and backward mismatch** | 69% to 71% of the backward values differ from the forward values. Arm A: 70% to 73%. Arm A lost 2.54 points on MNIST-1D |
+| **it adds overflow** | 46% to 54% of the backward blocks clip their largest value. 3.5% and 5.8% of the values clip by more than 10%, against 0.19% and 0.07% with own amax |
+| rounding to 0 does not rise on average | 6.92% against 7.04%, and 9.94% against 9.80%. Blocks with a scale that is too small round fewer values to 0, and they cancel the blocks with a scale that is too big. It does rise inside the blocks with a scale more than 25% too big: 9.4% against 6.95%, and 15.3% against 8.7% |
+| the backward copy is worse than arm A's copy | 3.8 dB worse on MNIST and 8.6 dB worse on MNIST-1D. It is also worse than the 16 by 16 tile |
+| more blocks do not average the error out | the price is 4.2, 4.5 and 4.6 dB at 16, 64 and 256 on a side. The paired scale is independent of the content of the block |
+| the largest of the 16 forward scales removes the overflow, and it is the 16 by 16 scale | snapping is monotone, so the largest of the 16 snapped scales is the snap of the tile maximum. That gives a 16 by 16 backward copy next to a 1D forward copy: two different copies again |
+| the encoder change is a bypass | pieces 3, 4 and 5 of `datapath.md` section 4.8 (amax, snap, clamp) are skipped. The four counters do not see payload clipping, so a fifth counter is needed |
+
+**Not run as a training arm.** By the SQNR order it loses more than arm A. To reject it with the paired rule
+it needs a new arm: 40 runs per dataset, about 15 minutes on MNIST and 88 minutes on MNIST-1D.
 
 ### The conversion price, measured
 
@@ -685,7 +778,7 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 | biases | the bias store is 48 bits at the accumulator's point, so it is not blocked and not tested here. |
 | a third dataset | the slope of the accuracy loss against the SQNR price is 1.2 points per dB on MNIST-1D and 0.05 on MNIST. Two datasets cannot fix a slope, so a new dataset needs its own arm. |
 | layers wider than one tile | W2 is one 16 by 16 tile and W3 is one tile, so the 16 by 16 arm gave each matrix one scale. NVIDIA used 16 by 16 weight tiles on a 1.2B model and found them better than two 1D copies. Here they tie, A minus B2 = +0.27 with a standard error of 0.32. A wider ruler would show if the -2.81 belongs to tiny layers. |
-| the return from the tile to 1D | the two-store design re-rounds W2 and W3 at the end of training. Not measured, because the sweep did not save the final weights. |
+| the return from the tile to 1D | the two-store design re-rounds W2 and W3 at the end of training. The probe measures the second rounding on float weights. The accuracy of a model that trained in the tile and then returned is not measured, because the sweep did not save the final weights |
 | W2 and W3 with different shapes | not measured. W3 is 16 by 10, so a 4 by 4 grid gives it 12 scales against 16 for W2. |
 | 20 epochs | every number here is 10 epochs. A longer run may narrow or widen a gap, and the protocol stays at 10 unless a rung is ambiguous. |
 
@@ -698,6 +791,7 @@ uv run python block_sweep.py mnist1d 10 A B2                # 80 runs, 3 hours 1
 uv run python block_sweep.py mnist1d 10 C2 D2              # 80 runs, 2 hours 55 minutes from the first file to the last
 uv run python tile_probe.py                                # SQNR and converted accuracy of every layout, 7 seconds
 uv run python blocks_per_step.py                           # the cost counts, from the shapes
+uv run python cached_scale_probe.py                        # the return and the cached scale, 14 seconds
 uv run python second_rounding_probe.py                     # the second rounding of A and dZ, for L5
 ```
 

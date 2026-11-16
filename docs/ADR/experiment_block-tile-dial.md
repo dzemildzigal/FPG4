@@ -36,9 +36,17 @@ values along the reduction axis to fit one term. A tile smaller than that costs 
    by 0.38 points on MNIST-1D, and it is not separable from the 4 by 4 tile.
 5. Two stores. Inference reads 1D blocks and uses one term. Training reads a tile in W2 and W3. A
    conversion runs at each switch: 416 weights, 104 cycles. Proposed by Dzemo, 2026-11-16. The return to 1D
-   re-rounds W2 and W3, so the deployed model is not the trained model. Not measured.
+   re-rounds W2 and W3, so the deployed model is not the trained model. Measured on float weights, no
+   training: 54% of the values change after a 4 by 4 tile and 20% after a 16 by 16 tile, and the SQNR falls
+   by 2.5 dB at 4 by 4. The accuracy of a tile-trained model after the return is not measured.
 6. One store, with the tile in both modes. No conversion, and the deployed model is the trained model.
    Inference pays the terms: 3.2% more cycles at 8 by 8 and 9.6% at 4 by 4 on the ruler, serial lane.
+7. Cached forward scales. Forward blocks are 1D along K. The backward blocks reuse the forward scales
+   as enforced scales, and the backward encoder skips amax and snap. Proposed by Dzemo, 2026-11-16. The
+   forward store is the inference store, so there is no return. Measured on W2, no training: the backward
+   copy is 3.8 dB (MNIST) and 8.6 dB (MNIST-1D) worse than arm A's copy, 46% to 54% of the backward blocks
+   clip their largest value, and 69% to 71% of the values still differ from the forward copy. The pairing
+   exists only for square matrices. Not run as a training arm. **Expected worse than the two 1D copies of ADR-025 (arm A).**
 
 **Argument**: On MNIST no two of these forms can be separated: every arm-to-arm gap sits between -0.40 and
 +0.01 accuracy points, and at most 2 of 4 configurations fire. Ten seeds of MNIST have no power to choose a
@@ -61,14 +69,15 @@ against 58,320 for a pure 1D store, which is 0.03%. The RTL is not written until
 - The ruler has layers one tile wide. W2 and W3 are one 16 by 16 tile each, so the 16 by 16 arm gave each
   matrix one scale. NVIDIA found 16 by 16 weight tiles better than two 1D copies on a 1.2B model (arXiv
   2509.25149, appendix E.5). Here they tie. A wider ruler would show if the -2.81 belongs to tiny layers.
-- The return from the tile to 1D in position 5 is not measured. The sweep did not save the final weights.
+- The accuracy after the return in position 5 is not measured. The sweep did not save the final weights.
+  The float-weight probe gives the size of the change, not the accuracy of a tile-trained model.
 
 **Related decisions**: ADR-004, ADR-007, ADR-017, ADR-022, ADR-024, ADR-025.
 
 **Related requirements**: Smallest area first, then fewest cycles for one operation.
 
 **Related artifacts**: `docs/experiment_block.md`, `python/block_sweep.py`, `python/tile_probe.py`,
-`python/blocks_per_step.py`, `out/tile_probe_price.json`, `docs/experiment_block_mnist_curves.png`,
+`python/blocks_per_step.py`, `python/cached_scale_probe.py`, `out/tile_probe_price.json`, `docs/experiment_block_mnist_curves.png`,
 `docs/experiment_block_mnist1d_curves.png`.
 
 **Related principles**: Buy accuracy with structure only when the data asks for it.
