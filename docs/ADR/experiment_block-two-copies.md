@@ -24,7 +24,7 @@ of the elements of W2 and W3 differ in the `e6m2` configurations and 76 to 79% i
 4. Keep one 1D copy and use the same blocked matrix in both passes, which is wrong but legal.
 
 **Argument**: Against the L2 reference, the two-copy form loses 0.398 accuracy points on MNIST, decided in 3
-of 4 configurations, and 2.541 points on MNIST-1D, decided in 4 of 4. It also loses on test loss in every
+of 4 configurations, and 2.541 points on MNIST-1D, decided in every one of the 4 configurations. It also loses on test loss in every
 configuration and on both datasets, and it fits the training set worse: 0.1666 against 0.1505 to 0.1518 for
 the tile arms. In its worst configuration it also multiplies the seed spread by 3.8.
 
@@ -40,5 +40,7 @@ material in the run notes, `docs/experiment_L2.md`.
 
 **Related principles**: A repeated bias does not average out.
 
-**Notes**: The copies do not diverge: their cosine stays at 0.990 to 0.993 for ten epochs. The cost is a
-constant bias, not a runaway.
+**Notes**: On MNIST the copies do not diverge: their cosine stays at 0.990 to 0.993 for ten epochs, and the
+cost is a constant bias. **On MNIST-1D the same telemetry falls from 0.982 at epoch 1 to 0.945 at epoch 10,
+so on a harder dataset the drift compounds.** That is why the loss is 0.40 points on MNIST and 2.54 on
+MNIST-1D, and it is the reason to reject the form on any dataset that is not as easy as MNIST.
