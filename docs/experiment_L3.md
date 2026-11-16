@@ -135,15 +135,23 @@ No other value changed and no run was repeated.
 `out/l3_mnist.log`, the runs are `out/l3/mnist/`, and the figure is
 `docs/experiment_L3_mnist_curves.png`.
 
-Final test accuracy, percent, mean of the four configurations:
+**L0 has no configuration.** It is float32 all the way: no scale, no block, no payload code, so the four
+configurations do not exist for it. It is one number over ten seeds:
 
-| Row | a6-e6m2 | f6-e6m2 | a6-e5m3 | f6-e5m3 | mean |
+| Reference row | Test accuracy, percent | Spread |
+|-|-:|-:|
+| L0, float32, no quantization, 10 seeds | **95.01** | one standard deviation 0.30 over the seeds |
+
+The two cells of L3 have the four configurations, because they round operands. Each cell below is the mean
+of ten seeds. The `±` is one standard deviation over those ten seeds, not a standard error:
+
+| Cell | a6-e6m2 | f6-e6m2 | a6-e5m3 | f6-e5m3 | Mean of the four |
 |-|-:|-:|-:|-:|-:|
-| L0, the reference, no rounding | 95.01 ±0.32 | 94.99 ±0.23 | 95.03 ±0.27 | 94.99 ±0.31 | 95.01 |
 | **L3-D**, deltas rounded | 95.01 ±0.32 | 94.99 ±0.23 | 95.03 ±0.27 | 94.99 ±0.31 | **95.01** |
 | **L3-DA**, deltas and activations rounded | 94.98 ±0.27 | 95.07 ±0.12 | 95.00 ±0.30 | 94.98 ±0.30 | **95.01** |
 
-Paired against L0, same seed. The rule is the pre-registered one:
+Paired against L0, same seed. The mean difference is in accuracy points and `se` is the standard
+error of that difference, which is a different quantity from the seed spread above:
 
 | Cell | Config | Mean difference | Standard error | Seeds that agree | Decision |
 |-|-|-:|-:|-:|-|
