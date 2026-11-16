@@ -316,7 +316,9 @@ def draw(seeds):
     import matplotlib.pyplot as plt
 
     epochs = np.arange(1, EPOCHS + 1)
-    colour = {"L3-D": "#1f77b4", "L3-DA": "#d62728", "L3-DAW": "#2ca02c"}
+    # the colour follows the cell ORDER, not a hardcoded rung name. A hardcoded name broke
+    # the figure of L4 after all 120 of its runs had finished. The runs were safe.
+    colour = dict(zip(CELLS, ("#1f77b4", "#d62728", "#2ca02c")))
     fig, axes = plt.subplots(1, 2, figsize=(13.0, 5.2))
     for ax, key, ylabel in ((axes[0], "loss", "cross entropy loss"),
                             (axes[1], "acc", "accuracy, percent")):
