@@ -80,3 +80,42 @@ for name, macs, enc_blocks in rows:
           f"encoder {enc_blocks*ENC/B:6.1f} cycles, {enc_blocks*ENC/B > per_sample(macs) and 'ENCODER BOUND' or 'MAC bound'}")
 print(f"  training also re-encodes the weights once per step: 810 blocks x {ENC} cycles = {810*ENC} cycles = "
       f"{810*ENC/B:.1f} cycles per sample")
+
+print("\n-- the tile and the lane: t terms per block pair")
+# A lane takes 16 payload products, adds them into one block sum S, and makes one term S * P with one scale product P.
+# A tile of side a gives 16 / a groups inside those 16 values along the contraction axis. Each group has its own scale.
+# So the lane makes t = 16 / a terms per block pair. 16 by 16: t = 1. 8 by 8: t = 2. 4 by 4: t = 4.
+# Two ways to pay for the extra terms:
+#   parallel  one term path per group. Costs LUT6. Costs no cycles.
+#   serial    one term path, used once per group. Costs no LUT6 (a select on S and on the scale, about 21 bits per lane).
+#             Costs cycles, because the 16 products wait for the term path.
+# LUT6 of one term path of one lane, from datapath.md 4.5 and 9: multiply 135, barrel shifter 210 to 250, 48-bit add 48.
+# They are estimates. Rung E9 measures them.
+TERM_LO, TERM_HI = 135 + 210 + 48, 135 + 250 + 48
+Z020_LUT = 53_200
+groups = lambda n, a: math.ceil(n / a)          # groups of a values along a contraction axis of n values
+# The GEMMs that read a tiled weight are the forward GEMM (contracts over K) and the dA GEMM (contracts over N).
+# W1 is never tiled: it has no dA GEMM. So only layers 2 and 3 count here.
+reads = []                                       # (outputs, contraction length) of every tiled GEMM
+for i, (_, K, N) in enumerate(layers):
+    if i > 0:
+        reads.append((N, K))                     # forward: N outputs, contraction over K
+        reads.append((K, N))                     # dA: K outputs, contraction over N
+print(f"{'tile':>6} {'t':>2} | {'parallel: extra LUT6, 4 lanes':>32} {'Z020':>11} | "
+      f"{'serial: extra cycles per step':>30} {'upper':>7} {'exact':>7} | {'inference':>9} | {'wide net, train':>15}")
+for side in (16, 8, 4):
+    t = 16 // side
+    lut_lo, lut_hi = (t - 1) * 4 * TERM_LO, (t - 1) * 4 * TERM_HI
+    upper = (t - 1) * sum(o * c(n) for o, n in reads) * B / 4                     # t groups in every block
+    exact = sum(o * (groups(n, side) - c(n)) for o, n in reads) * B / 4           # real groups, the empty ones skipped
+    infer = (t - 1) * sum(N * c(K) for i, (_, K, N) in enumerate(layers) if i > 0) / (fwd_blocks / B)
+    wide = (2 * t + 1) / 3                      # three GEMMs of equal size, two of them read the tile, one does not
+    print(f"{side:>2}x{side:<3} {t:>2} | {lut_lo:>13,} to {lut_hi:>6,} {100*lut_lo/Z020_LUT:>4.1f}-{100*lut_hi/Z020_LUT:>4.1f}% | "
+          f"{upper:>16,.0f} {100*upper/(211456/4):>7.1f}% {100*exact/(211456/4):>6.1f}% | {100*infer:>8.1f}% | x{wide:>5.2f} cycles")
+w23 = 16 * 16 + 16 * 10
+print(f"\nweights that change shape when training starts and ends: W2 {16*16} + W3 {16*10} = {w23}, "
+      f"which is {100*w23/13002:.1f}% of 13,002. At 4 values per cycle that is {w23/4:.0f} cycles.")
+
+w1_slots = 16 * c(784) * B                       # forward GEMM of W1 per step
+print(f"if W1 were tiled 4 by 4 and the lane were serial: +{3 * w1_slots / 4:,.0f} cycles per step, "
+      f"which is +{100 * 3 * w1_slots / 4 / (211456 / 4):.0f}% (W1 forward is {w1_slots:,} of 211,456 block-MACs)")

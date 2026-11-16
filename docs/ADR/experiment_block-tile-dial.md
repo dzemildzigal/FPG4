@@ -24,14 +24,21 @@ values along the reduction axis to fit one term. A tile smaller than that costs 
 **Positions**:
 1. 16 by 16 tile: 1 term, no extra area, 0.20% extra cycles for the second pass over the maximum, 1 scale
    for W2. Measured: no decision on MNIST, 2.808 points lost on MNIST-1D, decided in 4 of 4. **Rejected.**
-2. 8 by 8 tile: 2 terms, 1,572 to 1,732 LUT6 for four lanes, 5.2% extra cycles, 4 scales for W2. Measured:
+2. 8 by 8 tile: 2 terms. Parallel: 1,572 to 1,732 LUT6 for four lanes. Serial: 1,856 cycles, 3.5%. 4 scales
+   for W2. Measured:
    no decision on MNIST, 1.507 points lost on MNIST-1D, decided in 4 of 4. **Rejected.**
-3. 4 by 4 tile: 4 terms, 4,716 to 5,196 LUT6, 10.5% extra cycles, 16 scales for W2. Measured: no decision
+3. 4 by 4 tile: 4 terms. Parallel: 4,716 to 5,196 LUT6. Serial: up to 5,568 cycles, 10.5%. 16 scales for W2.
+   Measured: no decision
    on MNIST with a mean difference of +0.002, no decision on MNIST-1D with a mean difference of -0.384.
    **The only survivor.**
 4. Keep W2 and W3 blocked along K and accept that the gradient-down pass is not FP4. This is the
    reference, and it is what every number above is measured against. Its accuracy is the best of the set
    by 0.38 points on MNIST-1D, and it is not separable from the 4 by 4 tile.
+5. Two stores. Inference reads 1D blocks and uses one term. Training reads a tile in W2 and W3. A
+   conversion runs at each switch: 416 weights, 104 cycles. Proposed by Dzemo, 2026-11-16. The return to 1D
+   re-rounds W2 and W3, so the deployed model is not the trained model. Not measured.
+6. One store, with the tile in both modes. No conversion, and the deployed model is the trained model.
+   Inference pays the terms: 3.2% more cycles at 8 by 8 and 9.6% at 4 by 4 on the ruler, serial lane.
 
 **Argument**: On MNIST no two of these forms can be separated: every arm-to-arm gap sits between -0.40 and
 +0.01 accuracy points, and at most 2 of 4 configurations fire. Ten seeds of MNIST have no power to choose a
@@ -43,12 +50,20 @@ no longer "which shape is accurate": it is "is 1.12 accuracy points on the harsh
 3,464 LUT6, which is 5.9 to 6.5% of the Z020". The dial is ordered by area, which is the first criterion
 of the project, and the area price of the surviving setting is the highest one.
 
-**Implications**: The lane needs four sums and four scale products per block pair, so the term path becomes
-the largest item of the datapath: 4,716 to 5,196 LUT6 for four lanes, against about 2,900 LUT6 for the
-whole engine today. The cycle count rises by 10.5% per step. The store does not change: 58,336 bits
+**Implications**: The lane needs four sums and four scale products per block pair. The lane changes, and
+the change is a term count per GEMM, which is a mode of the lane. It can be paid in area (parallel term
+paths, 4,716 to 5,196 LUT6 for four lanes, against about 2,900 LUT6 for the whole engine today) or in
+cycles (one term path used four times, up to 10.5% per step on the ruler, and x 3.0 on a network where every
+layer but the first is tiled). The two prices are alternatives. The store does not change: 58,336 bits
 against 58,320 for a pure 1D store, which is 0.03%. The RTL is not written until Dzemo accepts a shape.
 
-**Related decisions**: ADR-004, ADR-007, ADR-017, ADR-024, ADR-025.
+**Open items that can change the choice**:
+- The ruler has layers one tile wide. W2 and W3 are one 16 by 16 tile each, so the 16 by 16 arm gave each
+  matrix one scale. NVIDIA found 16 by 16 weight tiles better than two 1D copies on a 1.2B model (arXiv
+  2509.25149, appendix E.5). Here they tie. A wider ruler would show if the -2.81 belongs to tiny layers.
+- The return from the tile to 1D in position 5 is not measured. The sweep did not save the final weights.
+
+**Related decisions**: ADR-004, ADR-007, ADR-017, ADR-022, ADR-024, ADR-025.
 
 **Related requirements**: Smallest area first, then fewest cycles for one operation.
 

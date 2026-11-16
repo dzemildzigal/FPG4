@@ -41,7 +41,7 @@ the option set and the reason for waiting are not lost. It is not a decision.
 | 021 | `experiment_ALL-paired-rule.md` | ALL | protocol | Decided | 2026-11-12 | `aea728b` |
 | 022 | `experiment_ALL-deployed-model.md` | ALL | protocol | Decided | 2026-11-14 | `490ba9a` |
 | 023 | `experiment_L2-format-open.md` | L2 | protocol | Pending | 2026-11-14 | `b21d0b6` |
-| 024 | `experiment_ALL-transpose-is-encoder.md` | ALL | datapath | Decided | 2026-11-15 | `0e58015` |
+| 024 | `experiment_ALL-transpose-is-encoder.md` | ALL | datapath | Decided, amended 2026-11-16 | 2026-11-15 | `0e58015` |
 | 025 | `experiment_block-two-copies.md` | block | format | Decided | 2026-11-15 | `0e58015` |
 | 026 | `experiment_block-tile-dial.md` | block | format | Pending, one survivor | 2026-11-16 | `14db604` |
 | 027 | `experiment_L3-scope.md` | L3 | protocol | Approved | 2026-11-16 | `237f74f` |

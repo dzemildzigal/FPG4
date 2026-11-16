@@ -133,14 +133,22 @@ Per training step, taken from `python/blocks_per_step.py` and `docs/datapath.md`
 | A | none | 128, which is 0.24% | a second copy of W2 and W3, 2,304 bits, 0.045% of the Z020 BRAM |
 | B2 | none | 104, which is 0.20% | none |
 | B3 | none | 104 plus the W1 tiles | none |
-| D2 | two term paths per lane, 1,572 to 1,732 LUT6, which is 3.0 to 3.3% of the Z020, or 2 times the cycles on the term path | 2,784, which is 5.2%, if one term path is kept | none |
-| C2 | four term paths per lane, 4,716 to 5,196 LUT6, which is 8.9 to 9.8% of the Z020, or 4 times the cycles on the term path | 5,568, which is 10.5%, if one term path is kept | none |
-| C3 | the C2 area, and W1 in tiles | the C2 cycles | none |
+| D2 | parallel: 1,572 to 1,732 LUT6, which is 3.0 to 3.3% of the Z020. Serial: none | parallel: none. Serial: 1,856, which is 3.5% | none |
+| C2 | parallel: 4,716 to 5,196 LUT6, which is 8.9 to 9.8% of the Z020. Serial: none | parallel: none. Serial: up to 5,568, which is 10.5% | none |
+| C3 | parallel: the C2 area. Serial: none | parallel: none. Serial: the C2 cycles plus 75,264 for the forward GEMM of W1, which is +142% | none |
 
 The 104 cycles of B2 and B3 are a second pass over the tile for its maximum. A 16 by 16 tile holds
 256 values, so the encoder reads 16 blocks of 16 values twice instead of once. No 256-value buffer
-is needed, because the first pass keeps one running maximum. The D2 and C2 cycle counts are the same
-second pass at two and four times the tile count of a lane, so they scale with the number of terms.
+is needed, because the first pass keeps one running maximum.
+
+**The D2 and C2 rows are different. They are term path costs, and a term path can be paid in two
+ways.** The terms are defined in the section "The tile and the lane" below. One lane with one term path
+takes 2 cycles per block pair at 8 by 8 and 4 cycles at 4 by 4 (serial, no area). A lane with 2 or 4
+term paths takes 1 cycle (parallel, area). The two prices are alternatives, and they are never added.
+**An earlier version of this table gave 2,784 cycles and 5.2% for D2. That was wrong.** It scaled the
+C2 figure by 2 over 4. The extra cycles scale with the number of extra passes, which is 1 at 8 by 8 and 3
+at 4 by 4, so the figure is 1,856 and 3.5%. `python/blocks_per_step.py` prints every number of this
+table.
 
 ## Results, MNIST, 10 seeds
 
@@ -449,19 +457,24 @@ that is finer along both axes at once.
 A square tile that keeps one value in both passes costs one term of the lane per 16 values along K. So
 the accuracy of a tile is bought in term paths:
 
-| Tile | Terms per lane | Extra LUT6, 4 lanes | Extra cycles per step, one term path | Scales of W2 | MNIST | MNIST-1D |
+| Tile | Terms per lane | Parallel: extra LUT6, 4 lanes | Serial: extra cycles per step | Scales of W2 | MNIST | MNIST-1D |
 |-|-:|-:|-:|-:|-:|-:|
-| 16 by 16 | 1 | 0 | 0.20%, the second pass for the tile maximum | 1 | no decision, 94.67 | **-2.81, rejected** |
-| 8 by 8 | 2 | 1,572 to 1,732, which is 3.0 to 3.3% of the Z020 | 5.2% | 4 | no decision, 94.66 | **-1.51, rejected** |
-| 4 by 4 | 4 | 4,716 to 5,196, which is 8.9 to 9.8% of the Z020 | 10.5% | 16 | no decision, 94.73 | no decision, -0.38 |
+| 16 by 16 | 1 | 0 | 0, and 0.20% for the second pass over the tile maximum | 1 | no decision, 94.67 | **-2.81, rejected** |
+| 8 by 8 | 2 | 1,572 to 1,732, which is 3.0 to 3.3% of the Z020 | 1,856, which is 3.5% | 4 | no decision, 94.66 | **-1.51, rejected** |
+| 4 by 4 | 4 | 4,716 to 5,196, which is 8.9 to 9.8% of the Z020 | up to 5,568, which is 10.5% | 16 | no decision, 94.73 | no decision, -0.38 |
 
 Dzemo's cost ranking is smallest area first, then fewest cycles. On that ranking the 16 by 16 tile is the
 cheapest and the 4 by 4 tile is the most expensive, and the two cheaper settings are decided losses.
 
-The dial is now a single question with a single answer on the evidence: **pay 4,716 to 5,196 LUT6, which
-is 8.9 to 9.8% of the Z020 and 10.5% more cycles per step, for the four term path, or accept a decided
-accuracy loss.** The 8 by 8 setting saves 3,144 to 3,464 LUT6 against the 4 by 4 and costs 1.12 accuracy
-points on MNIST-1D. No third option is measured.
+The dial is now a single question with a single answer on the evidence: **pay for four terms, in area
+(4,716 to 5,196 LUT6, which is 8.9 to 9.8% of the Z020, no extra cycles) or in cycles (up to 10.5% per
+step on this ruler, no extra area), or accept a decided accuracy loss.** The 8 by 8 setting saves 3,144 to
+3,464 LUT6 against the 4 by 4 and costs 1.12 accuracy points on MNIST-1D. No third option is measured.
+
+**The cycle price belongs to this ruler.** W1 holds 96.5% of the weights and stays 1D, so only 3.5% of
+the block-MACs read a tile. In a network where every layer except the first is tiled, a serial lane
+trains 3.0 times slower at 4 by 4 and 1.67 times slower at 8 by 8. The area price does not depend on the
+network.
 
 ### What must run next
 
@@ -555,12 +568,63 @@ So **1D and 16 by 16 are the same datapath with a different memory layout and a 
 grouping.** The 4 by 4 tile is not: it changes the lane, and it changes it into four copies of the same
 thing. That is the price of the only tile shape that survives both datasets.
 
-That is the production answer. The block shape is a field of the weight store, not a hardware mode. The
-device does not need a mode bit to choose it.
+**An earlier version of this section said: "The block shape is a field of the weight store, not a
+hardware mode. The device does not need a mode bit to choose it." That was wrong for every tile with a
+side below 16.** The lane needs a term count per GEMM: 1 for W1 and for a 16 by 16 tile, 2 for an 8 by 8
+tile, 4 for a 4 by 4 tile. That setting is a lane mode. It changes inside one forward pass of the ruler,
+because W1 is 1D and W2 is a tile. The same earlier version also gave 10.5% as the cost "of the second
+pass over the tile maximum and the re-encode". That was wrong too. The 10.5% is the serial term path.
 
-The store figures above were computed for a 16 by 16 tile. The 4 by 4 tile needs four sums and four scale
-products per block pair, which is the term path of the lane times four: 4,716 to 5,196 LUT6 for four
-lanes, and 10.5% more cycles per step for the second pass over the tile maximum and the re-encode.
+### The tile and the lane: what changes for each side length
+
+Terms, defined: the lane adds 16 payload products into one block sum `S` (the intra-block accumulator of
+`datapath.md` section 4.3), and then makes one **term**, `S` times one scale product `P`. A tile of side
+`a` puts `16 / a` different scales inside those 16 values along the contraction axis. Each group of `a`
+values needs its own `S` and its own `P`. So the lane makes `t = 16 / a` terms per block pair.
+
+| Tile | Values per scale along the contraction axis | Values per scale in the 2D tile | Terms `t` | Lane |
+|-|-:|-:|-:|-|
+| 1D block | 16 | 16 | 1 | the lane of `datapath.md` |
+| 16 by 16 | 16 | 256 | 1 | the same lane. The scale is read 16 times |
+| 8 by 8 | 8 | 64 | 2 | changes |
+| 4 by 4 | 4 | 16 | 4 | changes |
+
+**The lane sees one axis. Only the "values along the contraction axis" column matters to it.** The 4 by 4
+tile has 16 values per scale in 2D, and the same count as the 1D block (16 scales for W2). That
+equality explains why its accuracy matches. It does not make the lane see 16 values per scale. An
+earlier version of the 4 by 4 argument mixed the two counts. NVIDIA repeats the scale for 16 by 16: "2D block scales are
+replicated for each of the 1×16 blocks when being passed into Tensor Cores" (arXiv 2509.25149 section
+4.3).
+
+Two ways to pay for `t > 1`. Numbers from `python/blocks_per_step.py`, LUT6 are `datapath.md` estimates:
+
+| Tile | Parallel: `t` term paths per lane | Serial: one term path used `t` times | Inference, serial, tile kept | Wide network, training, serial |
+|-|-|-|-|-|
+| 8 by 8 | +1,572 to 1,732 LUT6, 3.0 to 3.3% of the Z020 | +1,856 cycles, +3.5% | +3.2% | x 1.67 |
+| 4 by 4 | +4,716 to 5,196 LUT6, 8.9 to 9.8% of the Z020 | +5,568 cycles, +10.5% (9.6% if the empty group of W3 is skipped) | +9.6% | x 3.00 |
+
+In the serial lane the 16-wide product array is used once per `t` cycles. It is idle for `t - 1`
+cycles out of `t`. The wide network figure is `(2t + 1) / 3`: three GEMMs of one layer have the same
+size, two of them read the tile and cost `t` each, one does not.
+
+### Three designs for the two modes
+
+| Design | Store at inference | Store in training | Lane at inference | Lane in training | Conversion at the switch | Deployed model is the trained model |
+|-|-|-|-|-|-|-|
+| one store, the tile in both modes | W1 1D, W2 and W3 tiles | the same | 1 term on W1, `t` on W2 and W3 | the same | none | yes |
+| two stores: 1D at inference, the tile in training | all three 1D | W1 1D, W2 and W3 tiles | 1 term | 1 term on W1, `t` on W2 and W3 | W2 and W3 only, 416 weights, 104 cycles, each way | **no. Not measured** |
+| 16 by 16 only | W1 1D, W2 and W3 tiles | the same | 1 term | 1 term | none | yes. Costs -2.81 on MNIST-1D |
+
+The two-store design is the one that keeps inference at one term. Two facts about it:
+
+1. Only W2 and W3 change shape. W1 is 1D in both modes. In the ruler that is 416 weights, 3.2%, and 104
+   cycles at 4 values per cycle.
+2. Going back to 1D re-rounds W2 and W3. A 1D block of 16 values along K takes values from 4 tiles with 4
+   different scales, finds a new maximum, and rounds again. So the model that runs at inference is a
+   different function from the model that training optimized and tested. `docs/ADR/experiment_ALL-deployed-model.md`
+   requires that the reported accuracy is the deployed model, so the number after the return conversion is
+   the number that counts. **It has not been measured.** The nearest measured number is the float to
+   tile conversion: 0.04 to 0.83 points on MNIST, 2.8 on MNIST-1D.
 
 ### The conversion price, measured
 
@@ -609,7 +673,7 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 | a model trained on FPG4, MNIST-like | any shape. 16 by 16 is cheapest | no drift, no second copy, and no accuracy cost on MNIST |
 | a model trained on FPG4, MNIST-1D-like | 4 by 4 for W2 and W3, 16 along K for W1 | the 16 by 16 tile loses 2.81 points and the 8 by 8 loses 1.51. 4 by 4 costs 4,716 to 5,196 LUT6 |
 | a float model converted for inference | 16 along K for W1, then 4 by 4 for W2 and W3 | a converted model cannot adapt to the coarser grid, and 4 by 4 is the best converted store in 3 of 4 configurations |
-| both on one device | the shape is a per-matrix field in the store | 1D and 16 by 16 cost the same datapath. 4 by 4 costs four term paths |
+| both on one device | the shape is a per-matrix field in the store, and the term count is a per-GEMM setting of the lane | 1D and 16 by 16 use one term. 4 by 4 uses four, in area or in cycles |
 
 ## What this experiment does not settle
 
@@ -620,6 +684,8 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 | the drift with FP4 gradients | in this experiment the gradient is float32. NVIDIA suspects the gradient `dA` is where the 1D/1D form hurts most. That needs L5. |
 | biases | the bias store is 48 bits at the accumulator's point, so it is not blocked and not tested here. |
 | a third dataset | the slope of the accuracy loss against the SQNR price is 1.2 points per dB on MNIST-1D and 0.05 on MNIST. Two datasets cannot fix a slope, so a new dataset needs its own arm. |
+| layers wider than one tile | W2 is one 16 by 16 tile and W3 is one tile, so the 16 by 16 arm gave each matrix one scale. NVIDIA used 16 by 16 weight tiles on a 1.2B model and found them better than two 1D copies. Here they tie, A minus B2 = +0.27 with a standard error of 0.32. A wider ruler would show if the -2.81 belongs to tiny layers. |
+| the return from the tile to 1D | the two-store design re-rounds W2 and W3 at the end of training. Not measured, because the sweep did not save the final weights. |
 | W2 and W3 with different shapes | not measured. W3 is 16 by 10, so a 4 by 4 grid gives it 12 scales against 16 for W2. |
 | 20 epochs | every number here is 10 epochs. A longer run may narrow or widen a gap, and the protocol stays at 10 unless a rung is ambiguous. |
 

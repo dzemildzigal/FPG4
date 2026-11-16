@@ -1,4 +1,4 @@
-# ADR-024: The transposed blocking is an encoder decision, not a datapath change
+# ADR-024: The transposed blocking is an encoder decision, up to a 16 by 16 tile
 
 **Issue**: One training step has three GEMMs per layer and each sums over a different axis. A weight matrix
 therefore needs one blocking for the forward pass and another for the gradient-down pass. Two primary
@@ -9,7 +9,9 @@ this changes the datapath.
 block sum, the scale product and the accumulator do not change. For activations and gradients the blocking
 stays 1D, which both sources do.
 
-**Status**: Decided, 2026-11-15, commit `0e58015`.
+**Status**: Decided, 2026-11-15, commit `0e58015`. **Amended 2026-11-16.** The decision holds for a 1D block
+and a 16 by 16 tile. A tile with a side below 16 changes the lane, because it puts `16 / side` scales
+inside the 16 values of one block pair. ADR-026 holds that case.
 
 **Group**: datapath, storage.
 
@@ -29,8 +31,8 @@ which is a datapath change. 8 by 8 needs two, 4 by 4 needs four.
 which the block experiment answers. Position 3 is the only one that reaches finer than 16 values along K,
 and it costs area or cycles. Position 4 has no bounded cost.
 
-**Implications**: The block shape becomes a field of the weight store. The device needs no mode bit, because
-1D and 16 by 16 present the same thing to a lane.
+**Implications**: The block shape becomes a field of the weight store. For a 1D block and a 16 by 16 tile
+the device needs no mode bit, because 1D and 16 by 16 present the same thing to a lane.
 
 **Related decisions**: ADR-007, ADR-025, ADR-026.
 
