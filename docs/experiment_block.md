@@ -257,6 +257,36 @@ Share of elements where the two copies hold a different value, last epoch, mean 
 | a6-e5m3 | 76.7% | 75.7% |
 | f6-e5m3 | 78.4% | 78.9% |
 
+## MNIST-1D
+
+Arm A and arm B2, four configurations, ten seeds, started because the trigger fired on MNIST: an arm
+reached at least one standard error. Arms B3, C2 and C3 were not run. **This was the wrong subset**, see
+the verdict below.
+
+Reference, rung L2, from `out/w/mnist1d`: 63.26, 63.35, 63.26, 63.55 test accuracy, mean 63.36. Test
+loss 0.9288.
+
+| Arm | Config | Difference, accuracy | Difference, test loss | Standard error | Sign agrees | Winner |
+|-|-|-:|-:|-:|-:|-|
+| A | a6-e6m2 | -2.210 | +0.0857 | 0.515 | 10 of 10 | reference |
+| A | f6-e6m2 | -2.991 | +0.0923 | 0.566 | 10 of 10 | reference |
+| A | a6-e5m3 | -1.950 | +0.0786 | 0.326 | 10 of 10 | reference |
+| A | f6-e5m3 | -3.014 | +0.0999 | 0.363 | 10 of 10 | reference |
+| B2 | a6-e6m2 | -2.304 | +0.0596 | 0.302 | 10 of 10 | reference |
+| B2 | f6-e6m2 | -3.239 | +0.0860 | 1.073 | 9 of 10 | reference |
+| B2 | a6-e5m3 | -2.530 | +0.0668 | 0.475 | 10 of 10 | reference |
+| B2 | f6-e5m3 | -3.160 | +0.0827 | 0.417 | 10 of 10 | reference |
+
+Means: arm A -2.541 accuracy and +0.0891 loss. Arm B2 -2.808 accuracy and +0.0738 loss. **Every one of
+the eight cells is decided against the arm.** Neither form is acceptable on this dataset.
+
+Arm A against arm B2, same seeds: A is ahead by 0.09 to 0.58 points, and every cell is inside its own
+standard error. The two forms cannot be separated from each other here. Both are bad.
+
+The drift telemetry of arm A on MNIST-1D is worse than on MNIST and it grows: `cos_dA1` falls from 0.982
+at epoch 1 to 0.945 at epoch 10, and `cos_dW1` from 0.985 to 0.945, in `a6-e5m3`. Compare MNIST, where
+the same numbers stay at 0.986 and 0.986.
+
 ## What the data says
 
 1. **Two 1D copies make training worse.** It loses in 3 of the 4 configurations by the pre-registered
@@ -281,17 +311,59 @@ Share of elements where the two copies hold a different value, last epoch, mean 
 8. **A 4 by 4 tile is not better than a 16 by 16 tile.** Their means are 94.73 and 94.67 to 94.70. A
    finer scale buys SQNR, and SQNR does not buy accuracy here.
 
-## Verdict: what L5 takes
+9. **MNIST-1D reverses the tile result.** 16 by 16 loses 2.808 accuracy points there, decided in 4 of 4
+   configurations, against no decision on MNIST. The two datasets disagree, and MNIST-1D is the one that
+   matters for a small continuous input.
+10. **The two forms cannot be separated on MNIST-1D.** Arm A is ahead of B2 by 0.09 to 0.58 points, all
+   inside their own standard errors. Both are 2 to 3 points behind the reference.
 
-| Item | Decision | Reason |
+## Verdict
+
+The first version of this section, written after MNIST only, said 16 by 16 was taken. **The MNIST-1D run
+overturns that.** Both forms that a real engine can use lose 2 to 3 accuracy points there.
+
+| Item | MNIST | MNIST-1D | Verdict |
+|-|-:|-:|-|
+| two 1D copies, arm A | -0.398, decided in 3 of 4 configs | -2.541, decided in 4 of 4 | **rejected** |
+| 16 by 16 tiles, arm B2 | -0.056, no decision | -2.808, decided in 4 of 4 | **rejected** |
+| 4 by 4 tiles, arm C2 | +0.002, no decision | not run | **open** |
+| W1 blocked along K | no decision, and no second blocking exists | not run | **taken**, on structure |
+
+Why the tile loses on MNIST-1D, in scales: a scale serves every weight whose row along the reduction axis
+and column along the output axis sit in one tile. So for W2, which is 16 by 16:
+
+| Layout | Scales of W2 | Scales of W3, 16 by 10 | Values under one scale along K |
+|-|-:|-:|-:|
+| 16 along K, one copy | 16 | 10 | 16 |
+| 16 by 16 tile | 1 | 1 | 16 |
+| 8 by 8 tile | 4 | 4 | 8 |
+| 4 by 4 tile | 16 | 12 | 4 |
+
+The 16 by 16 tile has the same granularity along K as the 1D block. It loses because it merges 16 outputs
+under one scale. MNIST tolerates that and MNIST-1D does not.
+
+### The dial this leaves
+
+A square tile that keeps one value in both passes costs one term of the lane per 16 values along K. So
+the accuracy of a tile is bought in term paths:
+
+| Tile | Terms per lane | Extra LUT6, 4 lanes | Extra cycles per step, one term path | Scales of W2 | Measured |
+|-|-:|-:|-:|-:|-|
+| 16 by 16 | 1 | 0 | 0.20%, the second pass for the tile maximum | 1 | MNIST no decision, MNIST-1D -2.81 |
+| 8 by 8 | 2 | 1,572 to 1,732, which is 3.0 to 3.3% of the Z020 | 5.2% | 4 | **not measured** |
+| 4 by 4 | 4 | 4,716 to 5,196, which is 8.9 to 9.8% | 10.5% | 16 | MNIST no decision, MNIST-1D **not run** |
+
+Dzemo's cost ranking is smallest area first, then fewest cycles. On that ranking the dial is ordered and
+the choice is: how much accuracy is the third and fourth term path worth?
+
+### What must run next
+
+| Run | Why | Cost |
 |-|-|-|
-| two 1D copies | **rejected** | decided by the rule in 3 of 4 configs, and worse on test loss in 4 of 4 |
-| 4 by 4 tiles | **rejected** | no accuracy gain over 16 by 16, and 4,716 to 5,196 LUT6 or 10.5% of the cycles |
-| 16 by 16 tiles for W2 and W3 | **taken** | the only tile that serves one scale to both passes at the lane width, no extra area, 0.20% extra cycles |
-| W1 | **stays blocked along K** | it has no gradient-down GEMM, so no second blocking exists for it, and a tile only lowers its SQNR by 0.74 to 2.29 dB |
+| C2, 4 by 4 on W2 and W3, MNIST-1D | the only measured shape that is finer than 1D. It decides whether the four term paths buy the 2.8 points back | 40 runs, 1 hour 51 minutes |
+| an 8 by 8 arm, both datasets | the middle setting of the dial: 2 term paths, 4 scales for W2. One new line in `TILES`, and one line in `tile_probe.py` | 40 runs per dataset |
 
-This is arm B2. The blockers on the choice were cost and structure, because the accuracy data does
-not separate the tile shapes at this model size.
+Until those run, no tile shape is accepted for training.
 
 ## The store this settles, inference against training
 
@@ -395,8 +467,10 @@ MNIST-1D, 3 seeds, test accuracy in percent:
 
 Three findings:
 
-1. **Training with the tile costs nothing. Converting to the tile costs 0.04 to 0.83 points on MNIST.**
-   That is the QAT gap: in training the weights move onto the coarse grid, and a converted model cannot.
+1. **Converting to the tile costs 0.04 to 0.83 points on MNIST.** That is the QAT gap: in training the
+   weights move onto the coarse grid, and a converted model cannot. Training with the tile is free on
+   MNIST, and it costs 2.3 to 3.2 points on MNIST-1D. The tile is not free anywhere that the weights need
+   a fine scale.
 2. **4 by 4 pays off in the conversion path.** It is better than 16 by 16 on MNIST in all four
    configurations and better than 1D in three of four, and on MNIST-1D it is better than 16 by 16 in all
    four. It is the store to convert into, and it is the store that needs the four term paths.
@@ -410,7 +484,8 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 
 | Use | Block shape | Why |
 |-|-|-|
-| a model trained on FPG4 | 16 by 16 for W2 and W3, 16 along K for W1 | no drift, no second copy, and no accuracy cost |
+| a model trained on FPG4, MNIST-like | 16 by 16 for W2 and W3, 16 along K for W1 | no drift, no second copy, and no accuracy cost |
+| a model trained on FPG4, MNIST-1D-like | **not settled**. The 16 by 16 tile loses 2.8 points, and 4 by 4 is not measured | the weights need more scales than one per 256 |
 | a float model converted for inference | 16 along K, or 4 by 4 if the four term paths are built | a converted model cannot adapt to the coarser grid |
 | both on one device | the shape is a per-matrix field in the store | 1D and 16 by 16 cost the same datapath |
 
@@ -423,27 +498,16 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 | the drift with FP4 gradients | in this experiment the gradient is float32. NVIDIA suspects the gradient `dA` is where the 1D/1D form hurts most. That needs L5. |
 | biases | the bias store is 48 bits at the accumulator's point, so it is not blocked and not tested here. |
 
-## MNIST-1D
-
-Arm A and arm B2, four configurations, ten seeds, started because the trigger fired on MNIST: an arm
-reached at least one standard error. The other three arms are not run, because two datasets are not
-needed to confirm that the two-copy form is worse, and the tile arms already show nothing.
-
-| Arm | Config | Mean difference, accuracy | Standard error | Sign agrees | Winner |
-|-|-|-:|-:|-:|-|
-| pending | | | | | |
-
 ## Reproduction
 
 ```
 cd python
 uv run python block_sweep.py mnist            # 200 runs, 66 minutes on 4 cores
-uv run python block_sweep.py mnist1d 10 A B2  # 80 runs
-uv run python curves.py mnist                 # not needed, nothing is retrained there
+uv run python block_sweep.py mnist1d 10 A B2  # 80 runs, 3 hours 42 minutes
+uv run python tile_probe.py                   # SQNR and converted accuracy of every layout, 7 seconds
+uv run python blocks_per_step.py              # the cost counts, from the shapes
+uv run python second_rounding_probe.py        # the second rounding of A and dZ, for L5
 ```
 
-The figure is `docs/block_mnist.png`, written by `block_sweep.py` and redrawn after every arm.
-
-The cost numbers above come from `python/blocks_per_step.py`, which counts the 16-value blocks of one
-training step from the shapes alone. The measurement of the two copies before any training, on the
-saved L0 weights, is `python/second_rounding_probe.py`. Neither script trains anything.
+The figures are `docs/block_mnist.png` and `docs/block_mnist1d.png`. `block_sweep.py` writes them and
+redraws after every arm, so a figure exists if a sweep is stopped early.
