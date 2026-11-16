@@ -503,8 +503,39 @@ a grid, no tile exists, and no store is read. The two shapes first act at L5.
 ### How far 4 by 4 is from one scale per value
 
 Dzemo's concern, 2026-11-16: a fine tile loses the benefit of block floating point and moves the format
-towards IEEE floating point, where every value has its own exponent. `python/granularity_probe.py`,
-saved L0 weights, 10 seeds, 4 configurations, 5 seconds. W2, 16 by 16:
+towards IEEE floating point, where every value has its own exponent.
+
+**The metric is logic, and a first version of this section used bits instead.** A shared scale saves one
+thing in the lane: an alignment. The lane adds 16 payload products that share one scale, so it makes one
+block sum and one scale product. Each group of `a` values that shares a scale needs its own sum, its own
+shift and its own scale product. One exponent per value aligns once per product. So the distance to one
+exponent per value is `t / 16`, where `t = 16 / a`:
+
+| Tile | Alignments and scale products per 16 payload products | Distance to one exponent per value | Barrels, per lane |
+|-|-:|-:|-:|
+| 16 by 16 | 1 | 6.2% | 1 |
+| 8 by 8 | 2 | 12.5% | 2 |
+| **4 by 4** | **4** | **25.0%** | **4** |
+| 2 by 2 | 8 | 50.0% | 8 |
+| one per value | 16 | 100.0% | 16 |
+
+**The 4 by 4 tile makes the term chain 4 times larger: 4 block sums, 4 barrel shifts, 4 scale products, 4
+adds into the layer accumulator, for the same 16 payload products.** `python/blocks_per_step.py`.
+
+| Cost of 4 terms in the lane | Value |
+|-|-|
+| extra LUT6, four lanes, parallel | 4,716 to 5,196, which is 8.9% to 9.8% of the Z020 |
+| extra cycles, four lanes, serial | up to 5,568, which is 10.5% on this ruler |
+| critical path, parallel | 2 more 48-bit adder levels, about 10.4 ns against 8.0 ns, so about 96 MHz against 125 MHz. **An estimate, rung E9 measures it** |
+| critical path, serial | unchanged. The lane waits instead |
+
+Dzemo's reading on 2026-11-16: a fine tile "makes for every contraction axis a need to change the MAC and
+GEMM silicon, and it will introduce further complications, increase our area and possibly even decrease our
+max f". That is correct on all three counts. Both contraction axes are affected, because the forward pass
+contraction is along K and the backward pass contraction is along N.
+
+**The bits follow a different question.** A second measurement, `python/granularity_probe.py`, saved L0
+weights, 10 seeds, 4 configurations, 5 seconds, answers what the store costs. W2, 16 by 16:
 
 | Layout | Scales of W2 | Bits per value | Values per scale | Non-zero values the payload rounds to 0, MNIST | SQNR MNIST | SQNR MNIST-1D |
 |-|-:|-:|-:|-:|-:|-:|
@@ -524,9 +555,10 @@ saved L0 weights, 10 seeds, 4 configurations, 5 seconds. W2, 16 by 16:
 | the bits are not the constraint, the term path is | the weight store is 58,336 bits for 4 by 4 against 58,128 for 16 by 16, which is 0.36%. The four term paths are 4,716 to 5,196 LUT6, which is 8.9% to 9.8% of the Z020 |
 | the SQNR probe predicts the accuracy gap between the two shapes | W2 and W3 together, MNIST-1D: the 16 by 16 tile is 2.32 dB below the 1D block and loses 2.808 points. The 4 by 4 tile is 0.36 dB below and loses 0.384 points. At 1.2 points per dB the prediction is 2.78 and 0.43, and the measurement is 2.81 and 0.38 |
 
-So the cost of the 4 by 4 shape is **four terms in the lane**. It is not a loss of block floating point, and
-it is not a move to one exponent per value: the group still holds 16 values under one scale, and the flush
-share is the same as the 1D store.
+So the 4 by 4 shape costs **nothing in the store** and **four times the term chain in the lane**. A first
+version of this section drew the conclusion that the shape is therefore cheap. That was wrong. The store is
+a rounding error of the design at 58,336 bits, and the term chain is 8.9% to 9.8% of the device plus a risk
+to the clock. **The lane is the cost, and the lane is what the tile is chosen on.**
 
 ### What must run next
 

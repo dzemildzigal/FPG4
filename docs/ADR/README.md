@@ -43,7 +43,7 @@ the option set and the reason for waiting are not lost. It is not a decision.
 | 023 | `experiment_L2-format-open.md` | L2 | protocol | Pending | 2026-11-14 | `b21d0b6` |
 | 024 | `experiment_ALL-transpose-is-encoder.md` | ALL | datapath | Decided, amended 2026-11-16 | 2026-11-15 | `0e58015` |
 | 025 | `experiment_block-two-copies.md` | block | format | Decided | 2026-11-15 | `0e58015` |
-| 026 | `experiment_block-tile-dial.md` | block | format | Deferred to L5, two shapes carried | 2026-11-16 | `14db604` |
+| 026 | `experiment_block-tile-dial.md` | block | format | Deferred to L5, two shapes carried, logic cost on the record | 2026-11-16 | `7744edf` |
 | 027 | `experiment_L3-scope.md` | L3 | protocol | Approved | 2026-11-16 | `237f74f` |
 | 028 | `experiment_L6-optimizer-forms.md` | L6 | protocol | Decided | 2026-11-15 | `863110b` |
 | 029 | `experiment_L7-eco.md` | L7 | format | Decided | 2026-11-15 | `863110b` |

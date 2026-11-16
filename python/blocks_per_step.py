@@ -119,3 +119,25 @@ print(f"\nweights that change shape when training starts and ends: W2 {16*16} + 
 w1_slots = 16 * c(784) * B                       # forward GEMM of W1 per step
 print(f"if W1 were tiled 4 by 4 and the lane were serial: +{3 * w1_slots / 4:,.0f} cycles per step, "
       f"which is +{100 * 3 * w1_slots / 4 / (211456 / 4):.0f}% (W1 forward is {w1_slots:,} of 211,456 block-MACs)")
+
+print("\n-- how far a tile is from one exponent per value, counted in logic")
+# A block scale saves an alignment. The lane adds 16 payload products that share one scale, so it aligns once.
+# A group of a values shares a scale, so the lane aligns once per group: t = 16 / a times per 16 products.
+# One exponent per value aligns once per product: 16 times. That is IEEE floating point addition.
+# So the distance to IEEE, in logic, is t / 16.
+for side in (16, 8, 4, 2, 1):
+    t = 16 // side
+    print(f"  tile {side:>2} by {side:<2}: {t:>2} alignment and scale product per 16 payload products, "
+          f"{100 * t / 16:5.1f}% of the way to one exponent per value")
+
+# The term path of one lane: multiply 135, barrel shifter 210 to 250, 48-bit add 48 LUT6 (datapath.md 4.5, 9).
+ADD_NS = 1.2            # one 48-bit carry chain on 7-series, 12 CARRY4 at about 0.10 ns each. An estimate.
+BUDGET_NS = 8.0         # 125 MHz
+print(f"\n  serial tile: one term path, t cycles per block pair. The critical path does not change.")
+print(f"  parallel tile: t term paths and a t-input adder tree. The path gains ceil(log2(t)) adder levels.")
+for side in (8, 4):
+    t = 16 // side
+    levels = math.ceil(math.log2(t))
+    ns = BUDGET_NS + levels * ADD_NS
+    print(f"  tile {side} by {side}: {levels} more adder level(s), {ns:.1f} ns instead of {BUDGET_NS:.1f} ns, "
+          f"so about {1000 / ns:.0f} MHz instead of {1000 / BUDGET_NS:.0f} MHz (estimate, rung E9 measures it)")

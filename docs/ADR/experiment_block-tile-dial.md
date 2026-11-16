@@ -89,16 +89,30 @@ against 58,320 for a pure 1D store, which is 0.03%. The RTL is not written until
 
 **Related principles**: Buy accuracy with structure only when the data asks for it.
 
-**Motion against the 4 by 4 shape, and the measurement that answers it**: Dzemo raised it on 2026-11-16. A
-fine tile could lose the benefit of block floating point and move the format towards IEEE floating point,
-where one value has one exponent. The answer is in `python/granularity_probe.py`. For W2 the 4 by 4 tile
-and the 1D block both need 16 scales and 4.50 bits per value, because `ceil(K/4) * ceil(N/4)` equals
-`N * ceil(K/16)` for every aligned matrix. The two forms spend the same budget in a different shape. The
-4 by 4 tile rounds 6.94% of the non-zero values to 0 on MNIST against 7.26% for the 1D block, and its SQNR
-is 20.56 dB against 20.67 dB. The slide to one scale per value starts below 4: a 2 by 2 tile costs 1.50 more
-bits per value for 2.60 dB, and one scale per value costs 7.50 more bits for 9.66 dB. The 16 by 16 tile is
-the most efficient shape per bit, at 19.15 dB for 4.03 bits, and it is the shape that loses 2.81 points. So
-the price of the 4 by 4 shape is four terms in the lane, and the price of the 16 by 16 shape is accuracy.
+**Motion against the 4 by 4 shape, raised by Dzemo on 2026-11-16, and it stands**: a fine tile "makes for
+every contraction axis a need to change the MAC and GEMM silicon, i.e. in our FPGA, this will introduce
+further complications, increase our area and possibly even decrease our max f". The measure is logic, and
+the logic is the number of alignments, not the bits. One shared scale per 16 payload products makes one
+block sum, one barrel shift, one scale product and one add into the layer accumulator. A group of `a`
+values that share a scale makes `16 / a` of each. One exponent per value makes 16 of each, and that is IEEE
+floating point addition:
+
+| Tile | Sums, barrels, scale products and adds per 16 payload products | Distance to one exponent per value |
+|-|-:|-:|
+| 16 by 16 | 1 | 6.2% |
+| 8 by 8 | 2 | 12.5% |
+| 4 by 4 | 4 | 25.0% |
+| one per value | 16 | 100.0% |
+
+Both contraction axes pay, because the forward pass contracts over K and the backward pass contracts over N.
+The four term chain costs 4,716 to 5,196 LUT6 for four lanes (8.9% to 9.8% of the Z020), and in parallel form
+it adds two 48-bit adder levels, about 10.4 ns against 8.0 ns, so about 96 MHz against 125 MHz. That clock
+figure is an estimate and rung E9 measures it.
+
+The store is a separate question, and it does not move: `python/granularity_probe.py` gives 4.50 bits per
+value for the 4 by 4 tile and for the 1D block, 16 scales for W2 in both, and 20.56 dB against 20.67 dB of
+SQNR. **That equality does not make the arithmetic the same.** A first version of this ADR used the store
+as its answer. The lane is the cost, and the lane is what the tile is chosen on.
 
 **Notes**: The 16 by 16 tile is free on MNIST for two reasons: the SQNR loss is small there and ten epochs of
 training absorb it. A converted float model does not get that back, so the conversion path prefers 1D or
