@@ -34,7 +34,8 @@ MNIST-1D when any arm reaches |mean| of at least one standard error on MNIST, de
 What is written
 ---------------
     out/block/<dataset>/<arm>_<config>_seed<seed>.json   one file per run, written when it ends
-    docs/block_<dataset>.png    four curves per arm: train and test loss, train and test accuracy
+    docs/experiment_block_<dataset>_curves.png   four curves per arm: train and test loss,
+                                                train and test accuracy
 
 A finished run is never repeated, so the sweep restarts where it stopped. The figure is redrawn
 after every arm, so a figure exists even if the sweep is stopped early.
@@ -181,10 +182,14 @@ def draw(seeds):
     fig.suptitle(f"{DATASET}: weight blocking. Dashed is train, solid is test. "
                  f"Each line is the mean over {len(CONFIG_NAMES)} configs and {len(seeds)} seeds, "
                  f"band is plus or minus one standard error", fontsize=8.6)
-    fig.text(0.01, 0.005, "reference is rung L2, out/w/. Its train loss was never stored, so that "
-                          "one dashed line is absent.", fontsize=7.2, color="#555555")
-    fig.tight_layout(rect=(0, 0.02, 1, 0.95))
-    path = os.path.join(DOCS, f"block_{DATASET}.png")
+    fig.text(0.012, 0.045, f"docs/experiment_block_{DATASET}_curves.png  |  arms: out/block/{DATASET}, "
+                          f"{len(seeds)} seeds x {len(CONFIG_NAMES)} configs per curve  |  "
+                          f"reference: out/w/{DATASET}, rung L2", fontsize=7.0, color="#555555")
+    fig.text(0.012, 0.020, "the reference stored no train loss, so that dashed line is absent  |  "
+                        "dashed = train, solid = test, band = plus or minus one standard error",
+             fontsize=7.0, color="#555555")
+    fig.tight_layout(rect=(0, 0.080, 1, 0.95))
+    path = os.path.join(DOCS, f"experiment_block_{DATASET}_curves.png")
     fig.savefig(path, dpi=130)
     plt.close(fig)
     print(f"  wrote {path}", flush=True)
@@ -274,7 +279,7 @@ def main():
         draw(seeds)
 
     table(seeds, WANTED)
-    print("\nthe figure is", os.path.join(DOCS, f"block_{DATASET}.png"))
+    print("\nthe figure is", os.path.join(DOCS, f"experiment_block_{DATASET}_curves.png"))
 
 
 if __name__ == "__main__":

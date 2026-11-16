@@ -78,7 +78,7 @@ def plot(results):
     axes[-1].set_xlabel("scale code (0 to 255)")
     fig.tight_layout()
     os.makedirs(OUT_DIR, exist_ok=True)
-    path = os.path.join(OUT_DIR, f"l1_scale_hist_{DATASET}.png")
+    path = os.path.join(OUT_DIR, f"experiment_L1_scale_hist_{DATASET}.png")
     fig.savefig(path, dpi=150)
     print("saved", os.path.abspath(path))
 

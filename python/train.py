@@ -70,7 +70,7 @@ def train(seed, epochs, batch_size, X, y, X_test, y_test, tag="mnist", dtype=DTY
     ax2.plot(history["test_acc"], label="test")
     ax2.set_xlabel("epoch"); ax2.set_ylabel("accuracy"); ax2.grid(True); ax2.legend()
     fig.tight_layout()
-    fig.savefig(os.path.join(out_dir, f"l0_curve_{tag}_seed{seed}.png"), dpi=120)
+    fig.savefig(os.path.join(out_dir, f"experiment_L0_curve_{tag}_seed{seed}.png"), dpi=120)
     plt.close(fig)
 
     return {"params": p, "history": history}

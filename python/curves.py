@@ -244,10 +244,14 @@ def draw(dataset):
         ax.grid(alpha=0.25)
         ax.set_xticks(epochs)
         ax.legend(ncol=2, fontsize=9, loc="best")
-        fig.text(0.01, 0.01, f"L0 float32 | L2 {chosen['L2']} | L2a {chosen['L2a']} | "
-                             f"dashed = train, solid = test", fontsize=7.5, color="#555555")
-        fig.tight_layout(rect=(0, 0.03, 1, 1))
-        path = os.path.join(DOCS, f"curves_{dataset}_{suffix}.png")
+        fig.text(0.012, 0.045, f"docs/experiment_L2_{dataset}_{suffix}.png  |  runs: out/w/{dataset} and "
+                              f"out/wa/{dataset}, L2 {chosen['L2']} and L2a {chosen['L2a']}, "
+                              f"seeds {' '.join(str(s) for s in PROBE_SEEDS)}  |  L0: python/l0_history.json",
+                 fontsize=7.0, color="#555555")
+        fig.text(0.012, 0.020, "dashed = train, solid = test, band = plus or minus one standard error",
+                 fontsize=7.0, color="#555555")
+        fig.tight_layout(rect=(0, 0.080, 1, 1))
+        path = os.path.join(DOCS, f"experiment_L2_{dataset}_{suffix}.png")
         fig.savefig(path, dpi=130)
         plt.close(fig)
         print(f"wrote {path}")

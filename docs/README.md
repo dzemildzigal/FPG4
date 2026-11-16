@@ -22,3 +22,8 @@ the work that follows it.
 
 A number in `results.md` carries its source: the script, the command, and the
 seed. A claim without a source does not enter the document.
+
+A figure is named `experiment_<experiment id>_<dataset>_<content>.png`, so a file maps to one
+experiment and one document. The footer of every figure states its own file name, the run directory
+behind its numbers and the number of runs in each curve. A figure is written by a script, never by
+hand.

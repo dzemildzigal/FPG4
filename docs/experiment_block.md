@@ -139,7 +139,8 @@ Reference, rung L2, from `out/w/mnist`:
 | **mean** | **94.73** | **0.1808** | |
 
 The L2 runs did not store the training loss. So every train loss below has no reference partner.
-The figure shows the four curves of every arm, and the reference appears in it with test curves only.
+The figure `docs/experiment_block_mnist_curves.png` shows the four curves of every arm, and the
+reference appears in it with test curves only.
 
 ### Final test accuracy, percent, mean of 10 seeds
 
@@ -300,7 +301,7 @@ the same numbers stay at 0.986 and 0.986.
    function.
 4. **Arm A adds seed variance.** In `f6-e5m3` the seed-to-seed standard deviation is 0.98 accuracy
    points against 0.26 for the reference. Same model, same seeds, same epochs.
-5. **The gap does not close.** See the figure. The accuracy gap opens at epoch 2 and is still there at
+5. **The gap does not close.** See `docs/experiment_block_mnist_curves.png`. The accuracy gap opens at epoch 2 and is still there at
    epoch 10. The test loss gap widens from epoch 3 to epoch 10.
 6. **The copies do not diverge.** The cosine of the two copies stays at 0.990 to 0.993 for ten epochs.
    The cost is a constant bias, not a runaway.
@@ -509,5 +510,7 @@ uv run python blocks_per_step.py              # the cost counts, from the shapes
 uv run python second_rounding_probe.py        # the second rounding of A and dZ, for L5
 ```
 
-The figures are `docs/block_mnist.png` and `docs/block_mnist1d.png`. `block_sweep.py` writes them and
-redraws after every arm, so a figure exists if a sweep is stopped early.
+The figures are `docs/experiment_block_mnist_curves.png` and
+`docs/experiment_block_mnist1d_curves.png`. `block_sweep.py` writes them and redraws after every arm, so
+a figure exists if a sweep is stopped early. Each figure states its own file name, the run directory and
+the number of runs per curve in its footer.

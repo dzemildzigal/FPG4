@@ -470,27 +470,30 @@ Two figures per dataset. The x axis is the training epoch, 1 to 10. The y axis i
 
 |file|content|
 |-|-|
-|`docs/curves_mnist_loss.png`|MNIST, loss against epoch, L0 and L2 and L2a|
-|`docs/curves_mnist_acc.png`|MNIST, accuracy against epoch, the same three runs|
-|`docs/curves_mnist1d_loss.png`|MNIST-1D, loss against epoch|
-|`docs/curves_mnist1d_acc.png`|MNIST-1D, accuracy against epoch|
+|`docs/experiment_L2_mnist_loss.png`|MNIST, loss against epoch, L0 and L2 and L2a|
+|`docs/experiment_L2_mnist_acc.png`|MNIST, accuracy against epoch, the same three runs|
+|`docs/experiment_L2_mnist1d_loss.png`|MNIST-1D, loss against epoch|
+|`docs/experiment_L2_mnist1d_acc.png`|MNIST-1D, accuracy against epoch|
 |`out/curves_<dataset>.json`|the same numbers, mean per epoch, so the figures are not the only record|
 |`python/l0_history.json`|the L0 per-epoch history of the three seeds below|
 |`python/curves.py`|the script that draws all of them. **It trains nothing**|
 
-`curves.py` writes the four figures into this folder and nowhere else, so the repository holds one copy of each.
+`curves.py` writes the four figures into this folder and nowhere else, so the repository holds one copy of
+each. Every figure in the repository is named `experiment_<experiment id>_<dataset>_<content>.png`, so a
+file maps to one experiment and one document. The footer of each figure names its own file and the run
+directories behind its numbers.
 
 **MNIST, loss and accuracy**
 
-![MNIST loss against training epoch](curves_mnist_loss.png)
+![MNIST loss against training epoch](experiment_L2_mnist_loss.png)
 
-![MNIST accuracy against training epoch](curves_mnist_acc.png)
+![MNIST accuracy against training epoch](experiment_L2_mnist_acc.png)
 
 **MNIST-1D, loss and accuracy**
 
-![MNIST-1D loss against training epoch](curves_mnist1d_loss.png)
+![MNIST-1D loss against training epoch](experiment_L2_mnist1d_loss.png)
 
-![MNIST-1D accuracy against training epoch](curves_mnist1d_acc.png)
+![MNIST-1D accuracy against training epoch](experiment_L2_mnist1d_acc.png)
 
 ### Two limits of the data, and neither is filled in
 

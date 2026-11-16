@@ -85,7 +85,7 @@ Hypothesis (not tested): SQNR counts the error of every weight equally. Rows of 
 
 #### Scale statistics (L1b, W1 + W2 + W3, three seeds, 2,430 blocks)
 
-Script: `python/l1_report.py`. Plot: `out/l1_scale_hist_mnist.png`. The input of the encoder is amax/6.
+Script: `python/l1_report.py`. Plot: `out/experiment_L1_scale_hist_mnist.png`. The input of the encoder is amax/6.
 
 |item|UE6M2|UE5M3|
 |-|-|-|
@@ -162,7 +162,7 @@ On MNIST the same measurement gives 0.03 to 0.21 (W1), 0.46 to 0.75 (W2), 0.29 t
 
 #### Scale statistics, MNIST-1D (L1b, W1 + W2 + W3, three seeds, 2,430 blocks)
 
-Plot: `out/l1_scale_hist_mnist1d.png`.
+Plot: `out/experiment_L1_scale_hist_mnist1d.png`.
 
 |item|UE6M2|UE5M3|
 |-|-|-|
