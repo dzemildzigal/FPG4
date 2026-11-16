@@ -24,7 +24,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SEEDS = [42, 4242, 424242, 123, 456, 789, 1010, 2020, 3030, 4040]
 CONFIGS = {"a6-e6m2": (q.e6m2, "L1b"), "f6-e6m2": (q.e6m2, "L1c"),
            "a6-e5m3": (q.e5m3, "L1b"), "f6-e5m3": (q.e5m3, "L1c")}
-TILES = {"4x4": (4, 4), "16x16": (16, 16)}
+TILES = {"8x8": (8, 8), "4x4": (4, 4), "16x16": (16, 16)}
 MATRICES = ("W1", "W2", "W3")
 
 
@@ -88,6 +88,7 @@ def ptq_accuracy():
     from model import evaluate
     from train import load_dataset
     VARIANTS = {"float, no quantization": (set(), None), "1D, all three": ({"W1", "W2", "W3"}, None),
+                "8x8, W2 and W3": ({"W2", "W3"}, "8x8"),
                 "16x16, W2 and W3": ({"W2", "W3"}, "16x16"),
                 "16x16, all three": ({"W1", "W2", "W3"}, "16x16"),
                 "4x4, all three": ({"W1", "W2", "W3"}, "4x4")}
@@ -113,4 +114,5 @@ def ptq_accuracy():
 
 
 if __name__ == "__main__":
+    main()
     ptq_accuracy()

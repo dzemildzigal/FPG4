@@ -52,6 +52,8 @@ COUNTERS = ("scale_saturated", "scale_underflow", "zero_blocks", "nonfinite_bloc
 #   "A"    two copies: one scale per 16 inputs for the forward pass, one scale per 16 outputs for
 #          the backward pass. Both copies come from the same float master, so they are not equal.
 #   "B2"   one scale per 16 by 16 tile, W2 and W3 only
+#   "D2"   one scale per 8 by 8 tile, W2 and W3 only. Eight values along K per scale, so a lane
+#          needs two terms per block pair, not one
 #   "B3"   one scale per 16 by 16 tile, all three matrices
 #   "C2"   one scale per 4 by 4 tile, W2 and W3 only
 #   "C3"   one scale per 4 by 4 tile, all three matrices
@@ -62,6 +64,7 @@ TILES = {
     "A": None,
     "B2": ((16, 16), ("W2", "W3")),
     "B3": ((16, 16), ("W1", "W2", "W3")),
+    "D2": ((8, 8), ("W2", "W3")),
     "C2": ((4, 4), ("W2", "W3")),
     "C3": ((4, 4), ("W1", "W2", "W3")),
 }

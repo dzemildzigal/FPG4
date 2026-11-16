@@ -15,6 +15,8 @@ keeps that scope and changes ONE thing, the block shape of the weight matrices:
     A    two 1D copies: 16 inputs per block for the forward pass, 16 outputs per block for the
          backward pass. W2 and W3 only, because W1 has no backward GEMM and so no second copy.
     B2   16 by 16 tiles, W2 and W3 only. One scale per 256 weights, same value in both passes.
+    D2   8 by 8 tiles, W2 and W3 only. One scale per 64 weights. Eight values along K per scale,
+         so a lane needs two terms per block pair instead of one.
     B3   16 by 16 tiles, all three matrices.
     C2   4 by 4 tiles, W2 and W3 only.
     C3   4 by 4 tiles, all three matrices.
@@ -74,8 +76,10 @@ REF = os.path.join(HERE, "..", "out", "w", DATASET)
 CONFIG_NAMES = list(qat.CONFIGS)
 ARM_LABEL = {"ref": "reference, L2", "A": "A  1D fwd + 1D bwd, W2 W3",
              "B2": "B2 16x16 tiles, W2 W3", "B3": "B3 16x16 tiles, all",
+             "D2": "D2 8x8 tiles, W2 W3",
              "C2": "C2 4x4 tiles, W2 W3", "C3": "C3 4x4 tiles, all"}
-ARM_COLOUR = {"A": "#c0392b", "B2": "#1f77b4", "B3": "#7fb3d5", "C2": "#2e7d32", "C3": "#8bc34a"}
+ARM_COLOUR = {"A": "#c0392b", "B2": "#1f77b4", "B3": "#7fb3d5", "D2": "#7b3fa0",
+              "C2": "#2e7d32", "C3": "#8bc34a"}
 COLOURS = ["#111111", "#c0392b", "#1f77b4", "#7fb3d5", "#2e7d32", "#8bc34a"]
 
 
