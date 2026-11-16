@@ -204,7 +204,7 @@ of the rule (`|mean| > 2 se`) is not met.
 block scale of every entry and reports `r`, the value in scale units. On the trained float weights, first
 batch of MNIST:
 
-| Tensor | Median `r` | The 90th percentile | Entries below the first code | Predicted SR share | Share of the `|dZ|` mass lost | Error put into `dW` |
+| Tensor | Median `r` | The 90th percentile | Entries below the first code | Predicted SR share | Share of the `\|dZ\|` mass lost | Error put into `dW` |
 |-|-:|-:|-:|-:|-:|-:|
 | `dZ3` | 0.0083 | 4.03 | 74.9% | 72.3% | 2.50% | 2.77% |
 | `dZ2` | 0.0110 | 1.62 | 78.7% | 75.9% | 4.88% | 4.53% |
