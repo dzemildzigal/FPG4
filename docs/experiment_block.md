@@ -694,8 +694,8 @@ difference on MNIST is 0.04 to 0.83 points, and the row above gives it.
 ```
 cd python
 uv run python block_sweep.py mnist                          # 200 runs, 66 minutes on 4 cores
-uv run python block_sweep.py mnist1d 10 A B2                # 80 runs, 3 hours 42 minutes
-uv run python block_sweep.py mnist1d 10 C2 D2              # 80 runs, 3 hours 44 minutes
+uv run python block_sweep.py mnist1d 10 A B2                # 80 runs, 3 hours 1 minute from the first file to the last
+uv run python block_sweep.py mnist1d 10 C2 D2              # 80 runs, 2 hours 55 minutes from the first file to the last
 uv run python tile_probe.py                                # SQNR and converted accuracy of every layout, 7 seconds
 uv run python blocks_per_step.py                           # the cost counts, from the shapes
 uv run python second_rounding_probe.py                     # the second rounding of A and dZ, for L5
