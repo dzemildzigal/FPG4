@@ -13,7 +13,7 @@ the work that follows it.
 | `experiment_L1.md` | L1, L1d, L1d-bias and L1e measured on MNIST and MNIST-1D | Active |
 | `experiment_L2.md` | L2, QAT on the weights only. Measured on MNIST and MNIST-1D | Active |
 | `experiment_block.md` | The weight blocking: two 1D copies against a 16 by 16, an 8 by 8 and a 4 by 4 tile. Measured on MNIST and MNIST-1D, 480 runs. Verdict: both copies and both coarser tiles rejected, 4 by 4 is the only survivor | Active |
-| `experiment_L3.md` | L3, FP4 backward pass with the weights, the activations and the optimizer in float. Measured on MNIST: no decision in either cell, and an equivalence bound of 0.2 points | Active |
+| `experiment_L3.md` | L3, FP4 backward pass with the weights, the activations and the optimizer in float. Measured on MNIST, three cells: no decision anywhere, and the whole backward pass stays within 0.2 points | Active |
 | `experiment_L4.md` | L4, the same three cells with stochastic rounding instead of round to nearest. Written and prepared, not yet run. MNIST and MNIST-1D | Prepared |
 | `ADR/` | Every architectural decision, one file per decision, in the Tyree and Akerman template. `ADR/README.md` is the index | Active |
 | `contract.md` | The training datapath: model, optimizer, rounding points, metrics | Not written |

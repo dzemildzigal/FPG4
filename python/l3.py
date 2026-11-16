@@ -346,7 +346,7 @@ def draw(seeds):
                  f"test. Each line is the mean over {len(CONFIG_NAMES)} configs and {len(seeds)} seeds, "
                  f"band is plus or minus one standard error", fontsize=8.6)
     fig.text(0.012, 0.045, f"docs/experiment_{RUNG}_{DATASET}_curves.png  |  runs: out/{RUNG.lower()}/{DATASET}, "
-                          f"{len(seeds)} seeds x {len(CONFIG_NAMES)} configs x 2 cells  |  "
+                          f"{len(seeds)} seeds x {len(CONFIG_NAMES)} configs x {len(CELLS)} cells  |  "
                           f"forward and optimizer float32, 10 epochs, batch {BATCH}", fontsize=7.0, color="#555555")
     fig.text(0.012, 0.020, f"{RUNG}, {'round to nearest' if ROUNDING == 'rtn' else 'stochastic rounding'}. "
                            "D = deltas only. DA = deltas and activations. DAW = also the "

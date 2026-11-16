@@ -6,11 +6,12 @@ weights, so no weight sits on a grid and no second blocking exists in it.
 
 **Decision**: L3 runs with float32 weights, float32 activations, float32 optimizer and float32 loss. Only the
 operands of the weight-gradient GEMM are rounded to FP4, once each, with one 8-bit scale per 16 samples. The
-rounding rule is round to nearest. Two cells are run: `L3-D`, which rounds only the loss gradients, and
-`L3-DA`, which also rounds the activation operands.
+rounding rule is round to nearest. Three cells are run: `L3-D`, which rounds only the loss gradients, `L3-DA`, which also rounds the
+activation operands, and `L3-DAW`, which also rounds the operands of the gradient-down GEMM.
 
-**Status**: Decided and measured, 2026-11-16. Both cells ran on MNIST, 80 runs, and neither differs from
-the float row by more than 0.2 points at two standard errors.
+**Status**: Decided and measured, 2026-11-16. Three cells ran on MNIST, 120 runs, and none differs from the
+float row by more than 0.2 points at two standard errors. Cell L3-DAW was added on Dzemo's instruction, so
+that the bound covers the whole backward pass and not only the weight-gradient GEMM.
 
 **Group**: experiment protocol.
 

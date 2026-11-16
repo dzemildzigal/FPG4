@@ -131,9 +131,10 @@ No other value changed and no run was repeated.
 
 ## Results, MNIST, 10 seeds
 
-80 runs, both cells, four configurations, ten epochs. Finished 2026-11-16. The output is
+120 runs, three cells, four configurations, ten epochs. Finished 2026-11-16. The output is
 `out/l3_mnist.log`, the runs are `out/l3/mnist/`, and the figure is
-`docs/experiment_L3_mnist_curves.png`.
+`docs/experiment_L3_mnist_curves.png`. Cell L3-DAW was added on Dzemo's instruction after the first two
+cells had run, so it was measured after them, with the same code and the same seeds.
 
 **L0 has no configuration.** It is float32 all the way: no scale, no block, no payload code, so the four
 configurations do not exist for it. It is one number over ten seeds:
@@ -149,6 +150,7 @@ of ten seeds. The `±` is one standard deviation over those ten seeds, not a sta
 |-|-:|-:|-:|-:|-:|
 | **L3-D**, deltas rounded | 95.01 ±0.32 | 94.99 ±0.23 | 95.03 ±0.27 | 94.99 ±0.31 | **95.01** |
 | **L3-DA**, deltas and activations rounded | 94.98 ±0.27 | 95.07 ±0.12 | 95.00 ±0.30 | 94.98 ±0.30 | **95.01** |
+| **L3-DAW**, and the gradient-down operands | 95.05 ±0.24 | 95.00 ±0.24 | 94.93 ±0.31 | 95.05 ±0.25 | **95.01** |
 
 Paired against L0, same seed. The mean difference is in accuracy points and `se` is the standard
 error of that difference, which is a different quantity from the seed spread above:
@@ -167,11 +169,18 @@ error of that difference, which is a different quantity from the seed spread abo
 | L3-DA against L3-D | f6-e6m2 | +0.09 | 0.05 | 6 of 10 | no decision |
 | L3-DA against L3-D | a6-e5m3 | −0.03 | 0.06 | 4 of 10 | no decision |
 | L3-DA against L3-D | f6-e5m3 | −0.01 | 0.02 | 5 of 10 | no decision |
+| L3-DAW | a6-e6m2 | +0.03 | 0.08 | 3 of 10 | no decision |
+| L3-DAW | f6-e6m2 | −0.02 | 0.07 | 4 of 10 | no decision |
+| L3-DAW | a6-e5m3 | −0.09 | 0.06 | **8 of 10** | no decision. The sign condition is met and the size condition is not: 0.09 is below 2 × 0.06 |
+| L3-DAW | f6-e5m3 | +0.04 | 0.08 | 6 of 10 | no decision |
 
-**The rule did not select L3-DA over L0 and it did not reject it.** The largest mean difference in the whole
-table is 0.09 points, and its standard error is 0.05. So the statement this rung supports is an
-**equivalence bound**: on MNIST, rounding the operands of the weight-gradient GEMM to FP4 moves the final
-accuracy by less than 0.2 points, at two standard errors, in either direction.
+**The rule did not select any cell over L0 and it did not reject any cell.** The largest mean difference in
+the whole table is 0.09 points, with a standard error of 0.06, and one configuration of L3-DAW met the sign
+condition without meeting the size condition. So the statement this rung supports is an **equivalence
+bound**: on MNIST, with a float32 forward pass, rounding the operands of the backward GEMMs to FP4 moves the
+final accuracy by **less than 0.2 points**, at two standard errors, in either direction.
+
+That bound now covers the whole backward pass, because L3-DAW rounds the operands of both GEMM families.
 
 The rounded operands, last epoch, mean over every seed and configuration:
 
@@ -186,6 +195,12 @@ The rounded operands, last epoch, mean over every seed and configuration:
 | L3-DA | `X` | 23.98 | 4.00% | |
 | L3-DA | `A1` | 20.70 | 4.03% | |
 | L3-DA | `A2` | 20.68 | 3.84% | |
+| L3-DAW | `dZ3` along the batch | 25.45 | 80.87% | W1 0.9963, W2 0.9935, W3 0.9934 |
+| L3-DAW | `dZ2` along the batch | 23.63 | 59.48% | |
+| L3-DAW | `dZ1` along the batch | 23.67 | 59.39% | |
+| L3-DAW | **`dZ3` along N** | 24.04 | **70.70%** | `dA2` 0.9938, `dA1` 0.9932 |
+| L3-DAW | **`dZ2` along N** | 21.12 | **11.86%** | |
+| L3-DAW | `X`, `A1`, `A2` | 23.98, 20.70, 20.59 | 4.00%, 3.86%, 3.06% | |
 
 ### What the data says
 
@@ -197,6 +212,9 @@ The rounded operands, last epoch, mean over every seed and configuration:
 | the vanished share does not follow the noise | `A1` has 20.70 dB of SQNR and 4% vanished. `dZ1` has 23.89 dB and 66% vanished. The share depends on the spread inside a block, the dB depends on the error norm |
 | the cosine moves with the number of rounded operands | 0.998 with the deltas alone, 0.994 with the deltas and the activations |
 | the prediction on record held | the expected effect was less than 0.5 points and not separable, from `second_rounding_probe.py`. It measured 0.09 and no decision |
+| **the whole backward pass survives FP4 on MNIST** | L3-DAW rounds both GEMM families and lands on 95.01 against 95.01, with a bound of 0.2 points |
+| the two blockings of `dZ` are not equal | `dZ3` vanishes 80.87% along the batch and 70.70% along N. `dZ2` vanishes 59.48% along the batch and **11.86%** along N. One 1D format needs two copies with two different error patterns |
+| rounding the gradient-down GEMM costs almost nothing | the cosine of `dA2` against float is 0.9938 and of `dA1` 0.9932 |
 | the curves are indistinguishable by eye | `docs/experiment_L3_mnist_curves.png`. The train loss curves of the two cells lie on each other for ten epochs |
 
 ### What this means for the ladder
