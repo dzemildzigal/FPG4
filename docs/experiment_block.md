@@ -418,8 +418,9 @@ the same numbers stay at 0.986 and 0.986.
 ## Verdict
 
 The first version of this section, written after MNIST only, said 16 by 16 was taken. The MNIST-1D run
-overturned that, and the C2 and D2 runs then walked the dial down. The verdict now rests on 480 runs:
-200 on MNIST, 160 on MNIST-1D, and 120 in probes.
+overturned that, and the C2 and D2 runs then walked the dial down. The verdict rests on 400 block runs,
+240 on MNIST and 160 on MNIST-1D, compared against 80 reference runs of rung L2, plus the SQNR probe on
+10 seeds per dataset.
 
 | Item | MNIST | MNIST-1D | Verdict |
 |-|-:|-:|-|
