@@ -125,14 +125,19 @@ restarted. The reported accuracy is always the deployed quantized model (ADR-022
 
 Two datasets, through the same scripts, selected by name.
 
-| dataset | inputs | classes | training set | test set |
-|-|-:|-:|-:|-:|
-| `mnist` | 784 | 10 | 60,000 | 10,000 |
-| `mnist1d` | 40 | 10 | 5,000 | 1,000 |
+| dataset | inputs | classes | training set | test set | on disk |
+|-|-:|-:|-:|-:|-:|
+| `mnist` | 784 | 10 | 60,000 | 10,000 | 12 MB |
+| `mnist1d` | 784 | 10 | 400,000 | 100,000 | 1.5 GB |
 
-MNIST comes from the four IDX files in `data/mnist`. `python/mnist1d.py` generates MNIST-1D once, about
-3 minutes and 1.6 GB in `data/mnist1d`. The training set of MNIST-1D is 3.1 GB once it is in memory as one
-pre-quantized copy, so that rung needs care on a 16 GB machine.
+MNIST comes from the four IDX files in `data/mnist`. `python/mnist1d.py` generates MNIST-1D once. It is a
+numpy rewrite of the public MNIST-1D generator: the 40-point signal is resampled to 784 points, so the input
+width matches MNIST and the block count along K is the same. The samples are 500,000, not the 5,000 of the
+published 40-point version, so a rung on MNIST-1D costs about seven times a rung on MNIST. See
+`docs/experiment_L1.md` for the measurements behind those statements.
+
+One rung needs care on a 16 GB machine: a pre-quantized copy of the MNIST-1D training set is 1.25 GB, and a
+sweep should not hold more than one of them.
 
 ## The rule of the evidence
 

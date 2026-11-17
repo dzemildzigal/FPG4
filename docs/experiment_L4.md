@@ -113,8 +113,8 @@ No decision is a legal result.
 | epochs, batch | 10, 128 |
 | runs | 120 per dataset |
 | time per run on MNIST | 11 s for D, 105 s for DA, 107 s for DAW, from the L3 file times. SR adds one `searchsorted` and one draw per value |
-| time on MNIST | about 2 hours 15 minutes |
-| time per run on MNIST-1D | **not measured. One smoke run of each cell is timed before the sweep** |
+| time on MNIST | **measured: 2 h 46 min** |
+| time per run on MNIST-1D | **measured: 82 s for D, 794 s for DA.** DAW is quoted when it is measured |
 | the reference rows | the L0 rows that exist. No new runs |
 
 ## Results, MNIST
