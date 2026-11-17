@@ -9,8 +9,9 @@ operands of the weight-gradient GEMM are rounded to FP4, once each, with one 8-b
 rounding rule is round to nearest. Three cells are run: `L3-D`, which rounds only the loss gradients, `L3-DA`, which also rounds the
 activation operands, and `L3-DAW`, which also rounds the operands of the gradient-down GEMM.
 
-**Status**: Decided and measured, 2026-11-16. Three cells ran on MNIST, 120 runs, and none differs from the
-float row by more than 0.2 points at two standard errors. Cell L3-DAW was added on Dzemo's instruction, so
+**Status**: Decided and measured on both datasets, 2026-11-17. Three cells ran on MNIST, 120 runs, and none
+differs from the float row by more than 0.2 points at two standard errors. Rung L4 repeated the same three
+cells on both datasets with stochastic rounding: MNIST-1D rejected the third cell, and ADR-031 holds that. Cell L3-DAW was added on Dzemo's instruction, so
 that the bound covers the whole backward pass and not only the weight-gradient GEMM.
 
 **Group**: experiment protocol.

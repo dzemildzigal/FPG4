@@ -108,8 +108,14 @@ def backward(p, y, cache):
 
 def loss(P, y):
     # loss = -mean(log(P[arange(B),y]))
+    # P is clipped away from zero before the log. In float32 a softmax probability underflows to
+    # exactly 0 once a logit sits about 104 below the maximum of its row. log(0) is minus infinity,
+    # and onehot times that is 0 * -inf, which is NaN, so the whole recorded loss became NaN even
+    # though every gradient was finite. The clip changes no gradient: dZ3 is built from P directly,
+    # never from this value. Without it a diverging run reports NaN where it should report a large
+    # number, and that hides how far it has gone.
     B = y.shape[0]
-    return -np.sum(onehot(y) * np.log(P)) / B
+    return -np.sum(onehot(y) * np.log(np.clip(P, 1e-30, None))) / B
 
 def accuracy(P, y):
     # accuracy = mean(argmax(P, axis=1) == y)

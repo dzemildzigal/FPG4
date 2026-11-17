@@ -48,6 +48,7 @@ the option set and the reason for waiting are not lost. It is not a decision.
 | 028 | `experiment_L6-optimizer-forms.md` | L6 | protocol | Decided | 2026-11-15 | `863110b` |
 | 029 | `experiment_L7-eco.md` | L7 | format | Decided | 2026-11-15 | `863110b` |
 | 030 | `experiment_ALL-evidence.md` | ALL | tooling | Decided | 2026-11-16 | `be568b1` |
+| 031 | `ADR-031-gradient-down-n-axis.md` | L4 | format | **Pending** | 2026-11-17 | this commit |
 
 ## What is not recorded here
 
@@ -57,4 +58,5 @@ it. A decision record says what was decided and why, and it points at the artifa
 ## Reading order
 
 If you read nothing else, read 001 (what the engine is for), 007 (the block), 014 (the accumulator), 026
-(the tile, which is open) and 028 (the two forms of L6).
+(the tile, which is open), 028 (the two forms of L6) and 031 (the axis of the contraction, which is open
+and which stops L5).

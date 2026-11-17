@@ -33,7 +33,7 @@ The simulation runs on MNIST and MNIST-1D, 10 seeds per cell, 4 format configura
 | L2a | quantization-aware training, weights and activations | done, 93.88 to 94.10 on MNIST |
 | block | the weight blocking for a backward pass that reads a transposed tile | done, 480 runs. Two 1D copies, 8 by 8 and 16 by 16 rejected. 4 by 4 carried with 16 by 16 to L5 |
 | L3 | FP4 operands of the backward GEMMs, float forward | done, 3 cells, 120 runs. No decision anywhere, bound 0.2 points |
-| L4 | L3 with stochastic rounding instead of round to nearest | **running** |
+| L4 | L3 with stochastic rounding instead of round to nearest | **done, 240 runs.** MNIST: no decision anywhere. MNIST-1D: the cell that rounds the gradient-down operands collapses, 64.98 to 36.03. ADR-031 |
 | L5 | FP4 forward and backward, optimizer float32 | not written. **The next rung, and the gate for three open dials** |
 | L6 | FP4 forward, backward and optimizer, in two forms | planned. Both forms must run |
 | L7 | error feedback into the momentum, no extra tensor | planned |
