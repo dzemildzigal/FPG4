@@ -30,6 +30,9 @@ Measured over 20,000 random blocks that span 14 decades of magnitude:
 | `a6-e5m3`, nearest | 8,340 of 20,000 | 6.375 |
 | any rule, scale rounded up | **0** | **6.000** |
 
+A second sample of 32,000 blocks, drawn with a different random stream, clips 52, 37, 51 and 35 percent of
+the blocks for the four configurations under the nearest rule, and none under the rounded-up rule.
+
 `r = 6.75` means the block maximum is stored 11% low.
 
 **Why a 2% error in one entry is not small.** The largest entry of a block is not a random entry. In a
@@ -146,8 +149,14 @@ Before the fix the same cell at width 16 gave 36.03 over 40 runs.
   The accuracy does not follow that fall, measured above.
 - Every L1, L2 and L2a number in `docs/` was measured with the nearest rule, in the forward pass. Those
   numbers include the clip. They must be re-measured before any of them is compared with a later rung.
-- The nearest rule stays in the code as the recorded state of the older rungs, so two rules now exist in
-  `python/quant.py` and the difference is one argument.
+- Two rules now exist in `python/quant.py`, and the difference is one argument. `quant.SCALE_ROUNDING` is
+  `"nearest"` by default, so every stored run keeps its meaning, and `FPG4_SCALE_ROUNDING=up` re-runs any
+  sweep under the new rule. `l2_sweep.py` writes the rule into every result file and into the output path.
+
+**Done on 2026-11-18.** `docs/spec.md` went from 0.13 to 0.14, section 4.4 step 2 and the threshold
+paragraph, on Dzemo's instruction. `python/quant.py` has the switch and the default is bit-identical to the
+code before the change, checked against a saved reference of 20 arrays. `python/l2_sweep.py` records the rule
+and separates the output paths, so no stored file can be overwritten by a re-measurement.
 
 ## Pros and cons of the options
 

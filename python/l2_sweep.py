@@ -51,7 +51,8 @@ assert MODE in ("w", "wa"), f"unknown scope {MODE}, choose w or wa"
 RUNG = {"w": "L2", "wa": "L2a"}[MODE]
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(HERE, "..", "out", MODE, DATASET)
+TAG = "" if quant.SCALE_ROUNDING == "nearest" else "_" + quant.SCALE_ROUNDING
+OUT = os.path.join(HERE, "..", "out", MODE + TAG, DATASET)
 CONFIG_NAMES = list(qat.CONFIGS)
 
 
@@ -62,6 +63,7 @@ def result_path(config, seed):
 def save_json(path, obj):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
+        obj["scale_rounding"] = quant.SCALE_ROUNDING
         json.dump(obj, f, indent=1)
 
 

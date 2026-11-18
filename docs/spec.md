@@ -1,6 +1,10 @@
 # FPG4 specification
 
-Version 0.13. Status: draft.
+Version 0.14. Status: draft.
+
+Change from 0.13: the scale-selection rule of section 4.4. The scale is now the smallest table entry at
+or above the target, not the nearest one. ADR-032 holds the reason and the measurements. Every number in
+documents of rungs L1 and L2 was measured with the nearest rule and is marked so.
 
 ## 1. Purpose
 
@@ -204,7 +208,8 @@ The encoder reads 16 elements, called a block, and it produces one 8-bit scale c
 Two rules are registered, `four6` and `amax6`. The rule `four6` tests two candidate scale codes and keeps the better one. It is the reference rule, and steps 1 to 8 below describe it. **Neither rule is chosen.** The measurements of L1 on two datasets do not separate them, and this project does not take a default. The `amax6` rule is described after step 8.
 
 1. Compute amax, the largest absolute value in the block.
-2. Candidate `c6` is the scale code nearest to `amax / 6`. Candidate `c4` is the scale code nearest to `amax / 4`.
+2. Candidate `c6` is the code of the smallest stored scale that is at or above `amax / 6`. Candidate `c4`
+   is the code of the smallest stored scale that is at or above `amax / 4`.
 3. Encode the block with `c6`, and then with `c4`. Step 7 defines the encoding of one candidate.
 4. Compute the absolute error of each candidate. The error is the sum over the 16 elements of `|x - x_hat|`.
 5. Keep the candidate with the smaller error. A tie goes to `c6`.
@@ -212,7 +217,20 @@ Two rules are registered, `four6` and `amax6`. The rule `four6` tests two candid
 7. Encode each element against the chosen scale. Compare the absolute value against the seven thresholds of the payload grid, each one multiplied by s. Take the nearest value. A tie goes to the even mantissa bit.
 8. Count the elements with a magnitude above `6 * s` as saturated.
 
-Step 2 uses the thresholds of the scale grid in the amax domain. The threshold between two adjacent scale values `s_lo` and `s_hi` is `d * (s_lo + s_hi) / 2`, where `d` is 6 for `c6` and 4 for `c4`. Both forms are dyadic. The form for `c6` is `3 * (s_lo + s_hi)`, and the form for `c4` is `2 * (s_lo + s_hi)`.
+Step 2 uses the boundaries of the scale grid in the amax domain. The boundary between two adjacent scale
+values `s_lo` and `s_hi` is `d * s_lo`, where `d` is 6 for `c6` and 4 for `c4`. A value at or below `d * s_lo`
+takes `s_lo` and anything above it takes `s_hi` or a higher scale. The form is dyadic, so it is exact.
+
+**Why the boundary and not the midpoint, and why this is a change.** Version 0.13 selected the nearest scale,
+whose threshold is the midpoint. The nearest scale can sit below `d * s_lo`, and then the largest element of
+the block needs a payload code above 6 and there is none. The block maximum then clips by up to 11 percent.
+The clip is one element per block, but it is the largest one, and in a softmax gradient row the largest
+element is the true-class one. The clip has one sign in every row, so the rounded rows stop summing to zero
+in one direction and the optimizer walks that direction. The boundary rule keeps the envelope
+`amax / s <= 6` for every block whose `amax` is inside the scale range, so nothing clips. On 32,000 random
+blocks the nearest rule clips 52, 37, 51 and 35 percent of the blocks for the four configurations, and the
+boundary rule clips none. The price is 1.68 to 2.86 dB of signal to noise ratio on a rounded tensor. The
+accuracy does not follow that price. ADR-032 holds the evidence.
 
 The encoder divides nowhere. Every threshold is the product of a small dyadic constant and a scale value, so every comparison is exact in binary. The RTL uses this form. Test 8 of the conformance suite proves that the fast path agrees with an encoder that uses exact rational arithmetic. Test 9 proves the scale algebra.
 
@@ -228,6 +246,7 @@ An implementation may ship the rule `amax6`, which tests `c6` only and skips ste
 | Forward activations | Round-to-nearest, ties-to-even | Deterministic and cheap. |
 | Saved activation for the weight-gradient GEMM | Round-to-nearest, ties-to-even | Deterministic and cheap. |
 | Upstream gradient dY | Stochastic rounding, optional | Removes the bias in the expected value. |
+| The block scale, every use | Smallest stored scale at or above the target | Bounds `amax / s` by the top payload code, so the block maximum never clips. ADR-032 |
 
 Stochastic rounding is a design option, not a requirement. The hardware cost is one random-number source per lane. Experiment E6 in section 10 decides if the option is necessary.
 

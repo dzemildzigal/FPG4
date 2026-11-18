@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 
 def sqnr(W, Wq):
@@ -11,6 +13,19 @@ PAYLOAD_CODES = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0])
 # The same 8 magnitudes as integers, in units of 0.5: 0,1,2,3,4,6,8,12. A product of two of them is an integer.
 # The largest product is 12 * 12 = 144, which needs 8 bits. Nothing rounds in that product, so there is no FP4 multiplier.
 PAYLOAD_INTS = (2 * PAYLOAD_CODES).astype(np.int32)
+
+# ADR-032, 2026-11-18. Which one of the 255 stored scales a block gets.
+#   "nearest"  the table entry closest to the target (amax/6). The entry can sit BELOW the target, so the
+#              largest value of the block then needs a payload code above 6, which does not exist, and it
+#              clips to 6 * scale. Measured: 52% of the blocks clip their maximum by up to 11%.
+#   "up"       the smallest table entry at or above the target. The block maximum then always has a code,
+#              so nothing clips. The price is 1.68 to 2.86 dB of SQNR on the rounded tensor.
+# "nearest" stays the default so that every run stored before ADR-032 keeps its meaning and this file can
+# still reproduce it. A sweep that wants the new rule sets quant.SCALE_ROUNDING = "up".
+SCALE_ROUNDING = os.environ.get("FPG4_SCALE_ROUNDING", "nearest")
+SCALE_RULES = ("nearest", "up")
+if SCALE_ROUNDING not in SCALE_RULES:
+    raise ValueError(f"FPG4_SCALE_ROUNDING must be one of {SCALE_RULES}, got {SCALE_ROUNDING!r}")
 
 def payload_index_sr(Wb, scales, rng):
     """The payload code under stochastic rounding. Same shapes as payload_index.
@@ -77,8 +92,9 @@ def scale_table_builder(E, M, bias):
 e6m2 = scale_table_builder(6, 2, 31)
 e5m3 = scale_table_builder(5, 3, 15)
 
-def encode_scale(x, table):
-    # GOAL: turn the real number x = amax/6 (or amax/4) into the 8-bit code of the closest scale that the format can store.
+def encode_scale(x, table, scale_rounding=None):
+    # GOAL: turn the real number x = amax/6 (or amax/4) into the 8-bit code of the scale this block receives.
+    # scale_rounding: None takes the module default quant.SCALE_ROUNDING. "nearest" and "up" are ADR-032.
     # The format can store only 255 scales: table[0] ... table[254]. table[255] is the NaN code.
     # So this is "round to nearest" on a list of 255 allowed values, the same idea as quantize_payload but with 255 values instead of 8.
     #
@@ -96,6 +112,19 @@ def encode_scale(x, table):
     #   v below table[0] (or exactly 0, a zero block): table[0] is the closest, code 0.
     #   v above table[254]: table[254] is the closest, code 254. This is saturation: the scale is too small for the block. scale_counters counts it.
     idx = np.argmin(dist, axis=-1)                         # (N, B)
+
+    # ADR-032 branch. "up" means the smallest table entry that is at or above v, so the envelope
+    # amax / scale <= 6 holds and no block clips its maximum. searchsorted with side="left" returns the
+    # first index whose entry is >= v, which is exactly that rule. There is no tie to break, because a
+    # v that sits exactly on an entry gets that entry, and that one entry is both the floor and the
+    # ceiling. Saturation at code 254 stays: a v above every entry cannot be met, and scale_counters
+    # counts it. This branch is skipped by default and "nearest" is untouched.
+    rule_now = SCALE_ROUNDING if scale_rounding is None else scale_rounding
+    if rule_now not in SCALE_RULES:
+        raise ValueError(f"scale_rounding must be one of {SCALE_RULES}, got {rule_now!r}")
+    if rule_now == "up":
+        idx = np.searchsorted(table[:255], v, side="left").clip(0, 254)
+        return table[idx][..., None], idx.astype(np.uint8)
 
     # STEP 3: ties. A tie means v is exactly in the middle of two neighbors: same distance to both.
     # argmin returns the FIRST minimum, so on a tie idx is the LOWER code c and the other tied code is c + 1.
@@ -172,7 +201,7 @@ def four6(Wb, amax6, amax4, scale_code6, scale_code4, rule):
         return Wb_hat, scale_codes, idx, scales
 
 
-def quantize_blocks(B, table, rule="L1b"):
+def quantize_blocks(B, table, rule="L1b", scale_rounding=None):
     # The one place where a block tensor becomes FP4. Weights and activations both come through here.
     # B is (rows, blocks, 16). The caller arranges the blocks, because a weight blocks along K
     # and an activation already has K in its last axis.
@@ -183,14 +212,14 @@ def quantize_blocks(B, table, rule="L1b"):
     #   scales      (rows, blocks, 1)   the scale value of each block
     #   counters    dict                the 4 counters of scale_counters
     amax = np.max(np.abs(B), axis=2, keepdims=True) # the largest magnitude in each block, (rows, blocks, 1)
-    scale6, scale_code6 = encode_scale(amax / 6.0, table) # block scale that puts amax at the top payload code 6
-    scale4, scale_code4 = encode_scale(amax / 4.0, table) # block scale that puts amax at payload code 4
+    scale6, scale_code6 = encode_scale(amax / 6.0, table, scale_rounding) # amax lands on the top payload code 6
+    scale4, scale_code4 = encode_scale(amax / 4.0, table, scale_rounding) # amax lands on payload code 4
     counters = scale_counters(amax, table)
     B_hat, scale_codes, idx, scales = four6(B, scale6, scale4, scale_code6, scale_code4, rule)
     return B_hat, scale_codes, idx, scales, counters
 
 
-def quantize_blocks_sr(B, table, rule, rng):
+def quantize_blocks_sr(B, table, rule, rng, scale_rounding=None):
     """quantize_blocks with stochastic rounding of the payload. The scale rule is unchanged.
 
     The scale is chosen exactly as in quantize_blocks: amax/6, or the four6 comparison of amax/6 against
@@ -199,7 +228,7 @@ def quantize_blocks_sr(B, table, rule, rng):
 
     Returns the same 5 values as quantize_blocks.
     """
-    B_hat_rtn, scale_codes, idx_rtn, scales, counters = quantize_blocks(B, table, rule)
+    B_hat_rtn, scale_codes, idx_rtn, scales, counters = quantize_blocks(B, table, rule, scale_rounding)
     idx = payload_index_sr(B, scales, rng)
     B_hat = decode_payload(B, idx, scales)
     return B_hat, scale_codes, idx, scales, counters
