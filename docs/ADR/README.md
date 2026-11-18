@@ -49,7 +49,8 @@ the option set and the reason for waiting are not lost. It is not a decision.
 | 029 | `experiment_L7-eco.md` | L7 | format | Decided | 2026-11-15 | `863110b` |
 | 030 | `experiment_ALL-evidence.md` | ALL | tooling | Decided | 2026-11-16 | `be568b1` |
 | 031 | `ADR-031-gradient-down-n-axis.md` | L4 | format | Superseded by 032 | 2026-11-17 | this commit |
-| 032 | `ADR-032-block-scale-never-clips.md` | L4 | format | **Decided** | 2026-11-18 | this commit |
+| 032 | `ADR-032-block-scale-never-clips.md` | L4 | format | **Decided** | 2026-11-18 | amends: the rule is per use |
+| 033 | `ADR-033-what-goes-into-L5.md` | L5 | configuration | **Decided** | 2026-11-19 | the closed L5 configuration |
 
 ## What is not recorded here
 
@@ -58,6 +59,6 @@ it. A decision record says what was decided and why, and it points at the artifa
 
 ## Reading order
 
-If you read nothing else, read 001 (what the engine is for), 007 (the block), 014 (the accumulator), 026
-(the tile, which is open), 028 (the two forms of L6) and 032 (the block scale must never clip the block
-maximum, which corrects the scale rule of 009 and 010 and supersedes 031).
+If you read nothing else, read 001 (what the engine is for), 007 (the block), 014 (the accumulator), 032
+(the block scale must never clip the block maximum, which corrects the scale rule of 009 and 010 and
+supersedes 031) and 033 (what goes into L5, which closes 026's tile and the three open dials).

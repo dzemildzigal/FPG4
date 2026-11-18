@@ -444,3 +444,100 @@ the D cell does not do.
 | the scale rule | unchanged, both settings, `four6` compared with RTN error | this document |
 | the generators | separate, so the batch order matches L3 seed by seed | this document |
 | the code | `python/l3.py <dataset> <nseeds> sr`. The same file as L3 on purpose, so the one change is checkable by diffing the rounding argument only | `python/l3.py` |
+
+## The 16 by 16 tile at width 64, 2026-11-19
+
+**Question.** Does one scale per 16 by 16 tile cost accuracy, against one scale per 16 values along the
+contraction axis? The tile is the cheaper shape: one term path per block pair instead of four, and one
+rounded copy of a delta serves both backward GEMMs instead of two.
+
+**Method.** One switch, `l3.TILE`. `FPG4_TILE=16` cuts every rounded operand into 16 by 16 tiles with one
+8-bit scale per tile. Unset, the 1D block runs, which is the shape every run before today used. Everything
+else is held: stochastic payload, rounded-up block scale, width 64, cell DAW, ten epochs, and the same ten
+seeds, so the comparison is paired seed by seed.
+
+**What the tile removes.** The two backward GEMMs reduce over different axes. `dW = A.T @ dZ` reduces over the
+batch. `dA = dZ @ W.T` reduces over the features. A 1D block holds one axis, so cell DAW rounds `dZ` twice and
+stores two copies. A 16 by 16 tile holds both axes, so one copy serves both GEMMs. **With the tile the second
+rounding does not exist.** The stored run files therefore carry `dZ3` and not `dZ3 along N`.
+
+**The padding of the class layer, ordered by Dzemo on 2026-11-19.** At width 64 the class layer cannot tile:
+`W3` is 64 by 10 and `dZ3` is batch by 10. Both pad to 16 columns with zeros, the tile is formed as usual, and
+the top 10 columns carry the signal. A zero never raises the tile maximum, so the scale of a tile still
+belongs to the real values, and a padded column decodes to zero, so its products add nothing to either GEMM.
+Verified before the run: the top 10 columns of a padded 64 by 10 tile are bit-identical to the same 10 columns
+inside a 16 by 16 tile whose other six columns are zero.
+
+### MNIST-1D, float 90.50 with a standard error of 0.20
+
+| Config | Shape | Mean | sd | Delta against 1D | Seeds agreeing | 2 se | Fires | Delta against float |
+|-|-|-:|-:|-:|-:|-:|-:|-:|
+| a6-e6m2 | 1D block | 90.04 | 0.37 | | | | | -0.46 |
+| a6-e6m2 | **16 by 16 tile** | **90.03** | 0.31 | **-0.01** | 3 of 10 | 0.28 | no | **-0.47** |
+| f6-e5m3 | 1D block | 90.40 | 0.38 | | | | | -0.10 |
+| f6-e5m3 | 16 by 16 tile | 89.81 | 0.52 | **-0.59** | 8 of 10 | 0.35 | **YES** | -0.69 |
+
+### MNIST, float 97.45 with a standard error of 0.05
+
+| Config | Shape | Mean | sd | Delta against 1D | Seeds agreeing | 2 se | Fires | Delta against float |
+|-|-|-:|-:|-:|-:|-:|-:|-:|
+| a6-e6m2 | 1D block | 97.36 | 0.19 | | | | | -0.09 |
+| a6-e6m2 | **16 by 16 tile** | **97.35** | 0.15 | **-0.00** | 6 of 10 | 0.09 | no | **-0.10** |
+| f6-e5m3 | 1D block | 97.47 | 0.13 | | | | | +0.02 |
+| f6-e5m3 | 16 by 16 tile | 97.32 | 0.13 | **-0.16** | 8 of 10 | 0.07 | **YES** | -0.13 |
+
+Figures: `experiment_L4_mnist1d_tile_vs_1d_block.png` and `experiment_L4_mnist_tile_vs_1d_block.png`, drawn
+by `python/tile_figure.py` from the stored run files.
+
+### The reading
+
+- **With `amax/6` the tile costs nothing.** 0.01 points on MNIST-1D and 0.00 on MNIST, and neither comparison
+  fires. The coarsest shape the engine can build leaves the accuracy exactly where the 1D block leaves it,
+  on both datasets: 90.03 against 90.04 and 97.35 against 97.36.
+- **With `four6` the tile costs 0.59 points on MNIST-1D and 0.16 on MNIST**, and both comparisons fire: in 8
+  of 10 seeds the tile is worse. The two settings do not survive the coarse shape, and one of them does.
+- **The two settings are not distinguishable from each other under the tile.** 89.81 against 90.03 is 0.22
+  points with a standard error of 0.19 on the difference. What separates them is their behaviour against
+  their own 1D form, not against each other.
+
+### The telemetry, and the same lesson as the vanished share
+
+| Operand | 1D block, `a6-e6m2` | 16 by 16 tile, `a6-e6m2` |
+|-|-:|-:|
+| `dZ3` signal to noise | 15.5 dB | 14.5 dB |
+| `X` signal to noise | 15.7 dB | 15.4 dB |
+| `dZ3` share below the first code | 80.5% | 88.2% |
+| cosine `W1` | 0.974 | 0.968 |
+
+The tile lowers the signal to noise ratio of every operand by about 1 dB and the weight-gradient cosine by
+0.006, and the accuracy does not follow. This is the third time in this rung that a signal to noise ratio
+moved without the accuracy moving, and it is the same lesson as the vanished share: at this width the SQNR of
+one operand does not predict the accuracy of the model.
+
+### Round to nearest does not survive the fix either
+
+| Cell | Width | Scale rule | Payload rule | Mean | Range | Float |
+|-|-|-|-|-:|-:|-:|
+| L4-DAW | 16 | up | nearest | 22.23 | 17.61 to 27.82 | 64.95 |
+| L4-DAW | 64 | up | nearest | **42.76** | 36.81 to 46.85 | 90.50 |
+| L4-DAW | 64 | up | **stochastic** | **90.03 to 90.40** | | 90.50 |
+
+Ten seeds each. The width-64 column is the new measurement. Round to nearest does not collapse because the
+scale rule clipped the block maximum: it collapses with the scale rule fixed, at both widths. The random
+source is not an optimisation. It is a requirement of the datapath.
+
+### Decision, and what it settles for L5
+
+**The block shape is 16 by 16, with `amax/6` and UE6M2.** One term path per block pair instead of four. One
+rounded copy of `dZ` instead of two. Accuracy indistinguishable from the 1D block on both datasets: 0.01 points
+on MNIST-1D and 0.00 on MNIST, with neither comparison firing.
+
+**The 4 by 4 shape is dropped.** The coarsest shape costs 0.01 points against the 1D block, so a finer tile
+can only improve a difference that is already inside the noise of ten seeds, and it costs four term paths,
+4,716 to 5,196 LUT6, which is 8.9 to 9.8 percent of the Z020, against one. ADR-026 carried two shapes to this
+rung. This measurement ends that.
+
+**`four6` is dropped from the tile.** It is kept on the record as a configuration, but it loses 0.59 points to
+the tile while `amax/6` loses 0.01, so `four6` has no route into L5.
+
+ADR-033 records the full L5 configuration and the two runs that L5 must make first.

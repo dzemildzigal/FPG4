@@ -33,7 +33,7 @@ The simulation runs on MNIST and MNIST-1D, 10 seeds per cell, 4 format configura
 | L2a | quantization-aware training, weights and activations | done, 93.88 to 94.10 on MNIST |
 | block | the weight blocking for a backward pass that reads a transposed tile | done, 480 runs. Two 1D copies, 8 by 8 and 16 by 16 rejected. 4 by 4 carried with 16 by 16 to L5 |
 | L3 | FP4 operands of the backward GEMMs, float forward | done, 3 cells, 120 runs. No decision anywhere, bound 0.2 points |
-| L4 | L3 with stochastic rounding instead of round to nearest | **done, 240 runs.** MNIST: no decision anywhere. MNIST-1D: the cell that rounds the gradient-down operands collapses, 64.98 to 36.03. **Cause found: the block scale was rounded to the nearest table entry and clipped the block maximum. With the scale rounded up the same cell gives 65.03 against float 64.95.** ADR-032, which supersedes ADR-031 |
+| L4 | L3 with stochastic rounding instead of round to nearest | **done, both datasets, narrow and width 64.** MNIST-1D rejected the cell that rounds the gradient-down operands, 64.98 to 36.03. **Cause: the block scale was rounded to the nearest table entry and clipped the block maximum. With the scale rounded up, at width 64, the same cell gives 90.03 to 90.40 against float 90.50.** The tile arm of 2026-11-19 adds the block shape: a 16 by 16 tile costs 0.01 points with `amax/6`, so L5 uses it. ADR-032, ADR-033 |
 | L5 | FP4 forward and backward, optimizer float32 | not written. **The next rung, and the gate for three open dials** |
 | L6 | FP4 forward, backward and optimizer, in two forms | planned. Both forms must run |
 | L7 | error feedback into the momentum, no extra tensor | planned |

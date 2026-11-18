@@ -16,7 +16,7 @@ All experiments will be in software, Python before RTL work starts.
 |L2a|QAT - FP4 for weights **and activations** of the forward pass, master weights in FP32, backprop FP32|how does weight+activation quantization affect the forward pass in training for full QAT|
 |L3|FP32 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap). **Measured on MNIST, three cells: every cell stays within 0.2 points of the float row. Measured on MNIST-1D: the third cell collapses, 64.98 to 36.03, because the delta blocked along N loses 71% of its entries at a layer width of 16. See ADR-031**|
 |L4|FP32 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3? **Not run on MNIST: L3 left a gap of 0.09 points there, so there is nothing to recover. SR folds into MNIST-1D or into L5**|
-|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train? **The next rung to write. Both tile shapes run here, `docs/experiment_block.md`. It is also where the three dials are decided**|
+|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train? **The next rung to write. Its configuration is closed by ADR-033: E2M1 payload, stochastic rounding, UE6M2 scale at `amax/6`, one 16 by 16 tile, class layer padded to 16 columns**|
 |L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains?|
 |L7|add ECO, no second tensor: the rounding error goes into the momentum|does it recover updates below 1 grid step|
 |L8|add Hadamard mixing|does outlier transformation help?|
@@ -28,21 +28,23 @@ records their numbers with that width. In the L1a row, "FP64 scale" names an exa
 
 Compare N to N-1. If delta is < than seed induced variance, the change was not substantial. Always test across seeds.
 
-## The three dials that L5 decides
+## The three dials, closed on 2026-11-19
 
-Decided by Dzemo, 2026-11-16. Three format questions are carried open until rung L5. L5 is the first rung
-where the forward pass and the backward pass are both FP4, so it is the first rung where all three can be
-compared under the conditions that matter.
+Dzemo carried three format questions open until rung L5 on 2026-11-16. They are now closed, and ADR-033 holds
+the full L5 configuration and the evidence for each setting.
 
-| Dial | Settings carried | What decides it | Where the evidence stands |
-|-|-|-|-|
-| the scale rule | `amax/6` (L1b) or `four6` (L1c) | accuracy of a trained model, paired by seed | `f6-e5m3` is best on L2 and L2a. MNIST cannot decide. ADR-010 |
-| the scale format | UE6M2 (`[7 sig][7 exp]`) or UE5M3 (`[8 sig][6 exp]`) | accuracy of a trained model, and the scale product width in the lane | UE5M3 is better on L2 and L2a. ADR-011 and ADR-023 stay Pending |
-| the tile | 4 by 4 in the forward and the backward pass, or 16 by 16 in training with 1D blocks at inference | accuracy on MNIST-1D, then area and cycles | 4 by 4 is the only shape that passes both datasets in training. The 16 by 16 return to 1D is measured on float weights only. ADR-026 |
+| Dial | Closed setting | Closed by |
+|-|-|-|
+| the scale rule | nearest in the forward pass, smallest entry at or above the target in the backward operands | ADR-032. The nearest rule clipped the block maximum, and the clip has one sign in every softmax gradient row. The rounded-up rule costs the forward pass 0.58 to 1.08 points, so the pass decides the rule |
+| the scale format | UE6M2, at `amax/6` | the tile arm of L4, 2026-11-19. Under a 16 by 16 tile `four6` loses 0.59 points on MNIST-1D in 8 of 10 seeds, and `amax/6` loses 0.01. UE6M2 keeps the wider range, 4.66e-10 to 6.44e+09 against 3.05e-05 to 1.15e+05 |
+| the tile | **16 by 16**, class layer padded to 16 columns with zeros | the tile arm of L4, 2026-11-19. 90.03 against 90.04 on MNIST-1D, 97.35 against 97.36 on MNIST, and it removes the second rounding of `dZ` |
 
-Two shapes are carried in every measurement that has a weight store. The 8 by 8 tile and the two 1D copies
-are dropped. Rungs L3 and L4 are not affected, because both keep float weights and float activations, so no
-tile exists and no store is read.
+The 8 by 8 tile and the two 1D copies were dropped on 2026-11-16. The 4 by 4 tile is dropped now: the
+coarsest shape costs 0.01 points against the 1D block on MNIST-1D and 0.00 on MNIST, so a finer tile can only
+improve a difference inside the noise of ten seeds, and it costs four term paths instead of one.
+
+Rungs L3 and L4 are not affected by the tile, because both keep float weights and float activations, so no
+further run of either rung is needed.
 
 ## L6 has two forms, and both MUST be run
 
