@@ -865,6 +865,12 @@ threshold[c] = 6 * (table[c] + table[c+1]) / 2
 | 500,000 random `amax` over 30 decades, compare against divide then nearest | **0 disagreements** |
 | the comparison is a search over 254 values | **no.** UE5M3 has 8 codes per octave, so the code is a leading-one detect plus 3 comparators, about 35 LUT6 |
 
+**The rule is a setting of the instruction, ADR-032.** The encoder carries two constant lists and one register
+bit. `nearest` tests `d * (s_lo + s_hi) / 2`, which is the list in the table above. `up` tests `d * s_lo`. The
+comparator chain, the leading-one detect and the cycle count are the same for both, so the second list is the
+only cost. The decoder is untouched and the block format is untouched, because the chosen scale is stored.
+The forward pass sets `nearest` and the backward operands set `up`.
+
 **Why the boundaries and not the midpoints, changed by ADR-032 on 2026-11-18.** The
 nearest entry can sit below `amax / 6`, and then the block maximum needs `r = |x| / scale`
 above 6 and there is no code above 6. Half the blocks clipped their maximum by up to 11%,

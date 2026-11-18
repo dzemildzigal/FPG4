@@ -246,6 +246,13 @@ So the scale rule is a setting of the use, and the encoder carries both. The `ne
 254 midpoints. The `up` form compares against 255 boundaries. The comparator tree, the cycle count and the
 area are the same, and the setting is one register bit. ADR-032 holds the evidence and the two settings.
 
+**Where the setting lives, and what it cannot touch.** The setting is a field of the GEMM instruction, so it
+is chosen per pass. It is **not** a field of the block: the block stays 8 bits of scale and sixteen 4-bit
+payloads, 72 bits. The decoder is unchanged, because it reads the stored scale and never re-derives the rule.
+The payload grid stays `{0, 0.5, 1, 1.5, 2, 3, 4, 6}`, which is E2M1. The top payload code stays 6. A wider
+top code was considered as a way to keep one scale rule for both passes, and it is refused because it would
+change E2M1.
+
 The encoder divides nowhere. Every threshold is the product of a small dyadic constant and a scale value, so every comparison is exact in binary. The RTL uses this form. Test 8 of the conformance suite proves that the fast path agrees with an encoder that uses exact rational arithmetic. Test 9 proves the scale algebra.
 
 Decoding is `x_hat = c / 2 * s`.

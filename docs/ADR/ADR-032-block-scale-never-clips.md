@@ -204,9 +204,19 @@ true-class element of a softmax row, and there the `up` rule is worth 29 points.
 weight are both operands of a row whose sum must be zero. The encoder carries both settings: 254 midpoints and
 255 boundaries, one register bit, no change to the comparator tree, the cycles or the area.
 
-**What this leaves open.** A payload grid whose top code is above 6, for example 7, would keep the nearest
-scale **and** remove the clip, in both passes. That is option 3 of this record, it is a format change, and it
-is not measured. It is the only option known today that serves both passes at once.
+**Option 3 is rejected, permanently, and Dzemo rejected it on 2026-11-18.** A top payload code above 6 would
+keep the nearest scale and remove the clip in both passes. It is refused because the payload grid
+`{0, 0.5, 1, 1.5, 2, 3, 4, 6}` **is** E2M1, one sign, two exponent bits and one mantissa bit, and E2M1 is
+settled. Nothing in this record may move it. The per-use rule is therefore the settled answer, not a
+temporary one.
+
+**What the per-use rule costs, and what it does not.** The decoder is untouched: it reads the stored scale and
+returns `c/2 * s`, and it never re-derives which rule produced the code. The block format is untouched: 8 bits
+of scale and sixteen 4-bit payloads, 72 bits, exactly as before. The encoder keeps its comparator chain,
+its leading-one detect and its cycle count. The two rules differ only in the constant list the comparators
+test: `d * (s_lo + s_hi) / 2` for `nearest` and `d * s_lo` for `up`. One register bit selects the list, and
+that bit is a field of the GEMM instruction, so it is set per pass and it costs no bit in the block. The
+estimate is a few LUT6 for the second constant set inside a block of about 1,005 LUT6. E9 measures it.
 
 ## Links
 
