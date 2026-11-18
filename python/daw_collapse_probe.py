@@ -30,10 +30,27 @@ The discriminator between a weight and a batch tensor is the row count: a weight
 rows, a batch tensor has 128. The batches of a seed are the same in every variant, because the
 shuffle generator is seeded by the seed alone.
 
-Run it from python/ with PYTHONPATH=.:  uv run python daw_collapse_probe.py > ../out/daw_collapse_probe.txt
-Cost: about 12 minutes.
+THE WIDTH IS AN ARGUMENT
+
+    uv run python daw_collapse_probe.py [width]
+
+At width 16 the discriminator between the two operands below was the row count: a weight has at most
+16 rows and a batch tensor has 128. That discriminator is FALSE at width 64, because W2 is (64, 64)
+and W3 is (64, 10), and both have more than 16 rows. l3.quantize_axis_n now carries the name of the
+operand, and this probe uses the name. A shape says nothing about what a tensor is.
+
+Run it from python/ with PYTHONPATH=.:
+    uv run python daw_collapse_probe.py 16 > ../out/daw_collapse_probe.txt
+    uv run python daw_collapse_probe.py 64 > ../out/daw_collapse_probe_w64.txt
+Cost: about 12 minutes at width 16, about 20 at width 64.
 """
-import numpy as np
+import sys
+
+# l3 reads its dataset, seed count, rounding rule, width and cells from sys.argv at import time.
+# This probe fixes all of those except the width, so sys.argv is reduced to the dataset name BEFORE
+# the import. Without this line l3 reads this probe's width argument as a dataset name and stops.
+WIDTH = int(sys.argv[1]) if len(sys.argv) > 1 else 16
+sys.argv = [sys.argv[0], "mnist1d"]
 
 import l3
 from train import load_dataset
@@ -44,33 +61,40 @@ CONFIG = "a6-e6m2"
 
 
 def patched_quantize_axis(round_delta, round_weight, orig):
-    """quantize_axis with one operand of the dA GEMM allowed to pass through untouched."""
+    """quantize_axis_n with one operand of the dA GEMM allowed to pass through untouched.
 
-    def inner(T, axis, table, rule, rng=None):
-        is_weight = T.shape[0] <= 16
+    The operand is identified by its name, never by its shape. W2 and W3 are named W2 and W3, and the
+    two deltas are named dZ2 and dZ3.
+    """
+
+    def inner(T, axis, table, rule, name, rng=None):
+        is_weight = name.startswith("W")
         if (is_weight and not round_weight) or (not is_weight and not round_delta):
             return T, None, None
-        return orig(T, axis, table, rule, rng)
+        return orig(T, axis, table, rule, name, rng)
 
     return inner
 
 
 def main():
+    l3.WIDTH = WIDTH
     X, y, Xt, yt = load_dataset("mnist1d")
-    orig = l3.quantize_axis
+    orig = l3.quantize_axis_n
     # A variant that leaves an operand float has no index to count, and the telemetry of l3
     # expects one. A probe-level guard is enough, because this probe reads accuracy and loss only.
     orig_vanished = l3.vanished
     l3.vanished = lambda blocks, idx: 0.0 if idx is None else orig_vanished(blocks, idx)
     variants = [
+        ("the DA cell, neither operand of the dA GEMM rounded", "sr", False, False),
         ("both operands, stochastic rounding, the shipped cell", "sr", True, True),
         ("both operands, round to nearest, the L3 cell never run here", "rtn", True, True),
         ("delta only, weight float", "sr", True, False),
         ("weight only, delta float", "sr", False, True),
     ]
-    print(f"dataset mnist1d, {EPOCHS} epochs, seed {SEED}, config {CONFIG}, cell DAW")
-    print("for scale: the DA cell, which rounds neither operand of the dA GEMM, reads 59.97 after")
-    print("epoch 1 and 62.24 after epoch 2 on this seed")
+    print(f"dataset mnist1d, {WIDTH} wide layers, {EPOCHS} epochs, seed {SEED}, config {CONFIG}, "
+          f"cell DAW")
+    print("the first row rounds neither operand of the dA GEMM. It is the reference every other row")
+    print("is read against, and it is measured here so that the table stands alone at any width")
     print()
     print(f"  {'variant':56s} {'epoch 1':>8s} {'epoch 2':>8s} {'loss 2':>9s}")
     print("  " + "-" * 84)
@@ -78,11 +102,11 @@ def main():
         l3.ROUNDING = rule
         l3.RUNG = "L4" if rule == "sr" else "L3"
         l3.CELLS = {f"{l3.RUNG}-{k}": v for k, v in l3.CELL_KINDS.items()}
-        l3.quantize_axis = patched_quantize_axis(rd, rw, orig)
+        l3.quantize_axis_n = patched_quantize_axis(rd, rw, orig)
         p, h = l3.train_l3(SEED, EPOCHS, 128, X, y, Xt, yt, CONFIG, f"{l3.RUNG}-DAW")
         print(f"  {label:56s} {h['test_acc'][0]:8.2f} {h['test_acc'][1]:8.2f} "
               f"{h['test_loss'][-1]:9.3f}", flush=True)
-    l3.quantize_axis = orig
+    l3.quantize_axis_n = orig
     l3.vanished = orig_vanished
 
 

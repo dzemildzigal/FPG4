@@ -804,7 +804,7 @@ Only then is it ready for the next layer.
 | step | operation | code |
 |---|---|---|
 | 1 | `amax` over C's own block of 16 | `quantize_blocks` |
-| 2 | pick the scale code by argmin over the table, ties to the even code | `encode_scale` |
+| 2 | pick the scale code as the first table entry that is not below the target, ADR-032 | `encode_scale` with `scale_rounding="up"` |
 | 3 | round each element to a payload code | `payload_index` |
 
 `C` is encoded by the same encoder as `A`. Its blocks are new, they run along the
@@ -865,10 +865,14 @@ threshold[c] = 6 * (table[c] + table[c+1]) / 2
 | 500,000 random `amax` over 30 decades, compare against divide then nearest | **0 disagreements** |
 | the comparison is a search over 254 values | **no.** UE5M3 has 8 codes per octave, so the code is a leading-one detect plus 3 comparators, about 35 LUT6 |
 
-**Why the midpoints and not `6 * table[c]`.** `6 * table[c]` is a floor, so the chosen
-scale is up to half a code step too small and every payload sits that much higher.
-The midpoint form is the same nearest rule as `encode_scale` in `quant.py`, so the
-hardware and the Python agree bit for bit.
+**Why the boundaries and not the midpoints, changed by ADR-032 on 2026-11-18.** The
+nearest entry can sit below `amax / 6`, and then the block maximum needs `r = |x| / scale`
+above 6 and there is no code above 6. Half the blocks clipped their maximum by up to 11%,
+and that defect took MNIST-1D from 64.98 to 36.03. The rule is now "the smallest table
+entry at or above the target", so the envelope `amax / scale <= 6` holds for every block
+inside the table range. The 254 midpoints become the 255 boundaries. **The comparator tree
+and the cycle count are unchanged. Only the constant table differs.** The boundary form
+matches `scale_rounding="up"` in `quant.py`, so hardware and Python still agree bit for bit.
 
 **The `/4` set for `four6` is the same structure with the factor 4.** It is a second
 snap of about 35 LUT6, not a second divider.
@@ -1182,7 +1186,7 @@ Expect a power saving and no area saving.
 | `P` unit count | one per `(i, b, k)`, so 16 for layer 1 at 320 LUT6, or fewer at a higher rate | **open**, a scheduling choice, not a format choice |
 | `S * P` circuit | **13x8** shift-add multiply, about 135 LUT6, plus a 21-bit alignment shifter, about 105 LUT6, plus the `S` tree of 15 adders, about 161 LUT6. **About 450 LUT6 per lane for all three.** 4 lanes is about 1800 LUT6, which is 9% of an Artix-7 35T. Or 16 DSP48 if DSP hard blocks are allowed | **open**, rung E9 decides. The earlier "1600 LUT6 for 16 lanes" counted the multiplier only and left out the `S` tree and the shifter |
 | encode `A` circuit | **section 4.8 defines it as a unit.** Nine pieces, `amax` 720 LUT6, scale snap 35 LUT6 with no division, one payload quantiser per value at 50 LUT6, packer, four counters, control | **defined, and costed as an estimate.** The `amax` tree is the largest piece and it is shared by every throughput choice |
-| encode cost, rule `amax/6` | one snap against 254 midpoints, then one payload pass per block. **No division.** `amax / 6 = table[c]` is the same statement as `amax = 6 * table[c]`, so the six is folded into the constants | **decided**, the form. Estimate in 4.8 |
+| encode cost, rule `amax/6` | one snap against 255 boundaries, ADR-032, then one payload pass per block. **No division.** `amax / 6 = table[c]` is the same statement as `amax = 6 * table[c]`, so the six is folded into the constants | **decided**, the form. Estimate in 4.8 |
 | encode cost, rule `four6` | a second snap against a `/4` set of midpoints, a second payload pass, 16 subtractions, 16 absolute values, two adds, one compare. Close to **twice** the encoder | **estimate.** `four6` stays in the simulation, and if the simulation drops it the RTL drops it. `amax/6` is the favoured rule |
 | encoder block buffer | `amax` needs all 16 values before any of them can be encoded, so the block cannot be streamed. **One value is 25 bits, not 32**, so one block is 400 flip-flops. Section 4.8.4 measures why 16 significand bits are enough | **decided**, from the measurement in 4.8.4 |
 | encoder cycles | **8, 4, 2 or 1 cycles per block, all four open.** The derived balance point is 4, because the 4-lane MAC needs a block every 4 cycles. 8 makes the MAC idle half the time. 1 fills a 16-lane MAC and needs 100 MHz rather than 125 | **open by decision.** Section 4.8 gives the area of each. The earlier "8 or fewer" was an estimate and never a requirement |

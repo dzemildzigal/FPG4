@@ -14,7 +14,7 @@ def softmax(x):
     e_x = np.exp(x - np.max(x, axis=1, keepdims=True))
     return e_x / np.sum(e_x, axis=1, keepdims=True)
 
-def init_params(seed, dtype=np.float32):
+def init_params(seed, dtype=np.float32, width=16):
     # Initialize model parameters with the given random seed, return them as a dictionary.
     # dtype is the float width of the whole simulation. Every other array follows from it: forward() casts
     # the input to p["W1"].dtype, so the activations, the gradients, the Adam state and the loss all take this
@@ -22,16 +22,19 @@ def init_params(seed, dtype=np.float32):
     # measured the shift against float64 at +0.00 points on MNIST and -0.17 on MNIST-1D, inside the seed
     # spread of 0.75 and 0.44. Historical results were float64; run history.md style comparisons only
     # between runs of the same width.
+    # width is the size of the two hidden layers. 16 is the ruler of every rung below L5. 64 is the
+    # wide fixture of ADR-031, which asks whether the collapse of the gradient-down GEMM depends on a
+    # layer being exactly one block wide.
     rng = np.random.default_rng(seed)
     std1 = np.sqrt(2.0 / 784)  # He initialization
-    std2 = np.sqrt(2.0 / 16)
-    std3 = np.sqrt(2.0 / 16)
+    std2 = np.sqrt(2.0 / width)
+    std3 = np.sqrt(2.0 / width)
     params = {
-        "W1": rng.standard_normal((784, 16)) * std1,
-        "b1": np.zeros(16),
-        "W2": rng.standard_normal((16, 16)) * std2,
-        "b2": np.zeros(16),
-        "W3": rng.standard_normal((16, 10)) * std3,
+        "W1": rng.standard_normal((784, width)) * std1,
+        "b1": np.zeros(width),
+        "W2": rng.standard_normal((width, width)) * std2,
+        "b2": np.zeros(width),
+        "W3": rng.standard_normal((width, 10)) * std3,
         "b3": np.zeros(10)
     }
     if dtype is not np.float64:

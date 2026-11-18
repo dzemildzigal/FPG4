@@ -1,6 +1,7 @@
 # ADR-031: A 1D block along the contraction axis N is rejected at small N
 
-**Status**: Pending. Measured, and the ladder cannot pass L5 until a position is chosen. 2026-11-17.
+**Status**: **Superseded by ADR-032 on 2026-11-18.** The collapse this record was written about is caused
+by the block-scale rule, not by the axis of the blocking. The measurement below is kept unchanged.
 
 **Date**: 2026-11-17
 
@@ -45,10 +46,20 @@ the network from 64.98 to 36.03 points.
 
 ## Decision outcome
 
-No decision. Rung L5 cannot choose a backward operand scheme until this record is decided.
+**Superseded. The premise of this record does not hold.**
 
-The measurement stands on its own: **a 1D block along the contraction axis N is rejected at N of 16 or less,
-on MNIST-1D, at 10 seeds, for both rounding rules.**
+The measurement that opened this record is real: the shipped L4-DAW cell took MNIST-1D from 64.98 to 36.03.
+The cause is not the axis of the contraction. It is the block-scale rule, which stored the nearest table entry
+to `amax/6` and so clipped the block maximum in half the blocks. In a softmax gradient row that maximum is the
+true-class entry, so every row of `dZ3` stopped summing to zero with the same sign, and the logits walked.
+ADR-032 holds the mechanism, the measurements and the fix.
+
+With the scale rounded up, the same cell at width 16, where one block along N is the whole layer, sits at
+**65.03 against float 64.95** over 5 runs. A 1D block along N is therefore **not** rejected at N of 16.
+
+What this record still contributes: the two GEMM families contract over two different axes, that is
+unchanged, and the delta still needs two blockings if both families are rounded. The measurement of the cost
+of the second blocking is now ADR-032's subject, not this record's.
 
 ## Consequences
 

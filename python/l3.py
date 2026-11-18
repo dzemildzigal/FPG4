@@ -46,7 +46,6 @@ from model import adam, evaluate, forward, init_params, onehot, relu_derivative
 from train import DATASETS, DTYPE, load_dataset, load_weights
 
 SEEDS = [42, 4242, 424242, 123, 456, 789, 1010, 2020, 3030, 4040]
-EPOCHS = 10
 BATCH = 128
 BLOCK = 16                 # samples per block along the batch
 WEIGHTS = ("W1", "W2", "W3")
@@ -72,7 +71,25 @@ assert DATASET in DATASETS, f"unknown dataset {DATASET}, choose from {list(DATAS
 assert ROUNDING in ("rtn", "sr"), f"unknown rounding {ROUNDING}, choose rtn or sr"
 RUNG = "L3" if ROUNDING == "rtn" else "L4"
 CELLS = {f"{RUNG}-{k}": v for k, v in CELL_KINDS.items()}
-OUT = os.path.join(HERE, "..", "out", RUNG.lower(), DATASET)
+# The width of the two hidden layers. 16 is the ruler that every rung below L5 uses. 64 is the wide
+# fixture of ADR-031. A wide run writes to its own directory and draws its own figure, so it can never
+# mix with the 16-wide evidence, and the narrow default keeps every stored run exactly as it was.
+WIDTH = int(sys.argv[4]) if len(sys.argv) > 4 else 16
+# A run of a different length is a probe, not a rung, so it gets its own directory and its own figure.
+# MNIST has 4,690 steps in ten epochs and MNIST-1D has 31,250, and the collapse may simply need more
+# steps than MNIST has. This argument measures that.
+EPOCHS = int(sys.argv[6]) if len(sys.argv) > 6 else 10
+TAG = ("" if WIDTH == 16 else f"_w{WIDTH}") + ("" if EPOCHS == 10 else f"_e{EPOCHS}")
+OUT = os.path.join(HERE, "..", "out", f"{RUNG.lower()}{TAG}", DATASET)
+
+# The fifth argument runs only the named cells, for example "DAW" or "D,DAW". Without it, all three
+# run. A cell that is named here is the only one drawn, so the figure states which cells it holds.
+CELL_FILTER = sys.argv[5] if len(sys.argv) > 5 else ""
+if CELL_FILTER:
+    wanted = {f"{RUNG}-{k.strip().upper()}" for k in CELL_FILTER.split(",")}
+    unknown = wanted - set(CELLS)
+    assert not unknown, f"unknown cell {unknown}, choose from {list(CELLS)}"
+    CELLS = {k: v for k, v in CELLS.items() if k in wanted}
 
 
 def result_path(cell, config, seed):
@@ -129,6 +146,17 @@ def quantize_axis(T, axis, table, rule, rng=None):
     return np.moveaxis(out, -1, axis), idx, blocks
 
 
+def quantize_axis_n(T, axis, table, rule, name, rng=None):
+    """quantize_axis, with the name of the operand carried through to a probe.
+
+    A probe must know which operand it is looking at. The shape cannot say: at width 16 a weight is
+    small and a delta is (128, small), so the row count tells them apart, but at width 64 a delta is
+    (128, 10) and W3 is (64, 10). One has 128 rows and one has 64, and a two-copy delta of the batch
+    axis has 64 as well. So the name is passed, and nothing is inferred from a shape.
+    """
+    return quantize_axis(T, axis, table, rule, rng)
+
+
 def vanished(blocks, idx):
     """Share of non-zero values whose payload code is 0. Those values send no update in that step."""
     nz = blocks != 0
@@ -172,8 +200,8 @@ def backward_l3(p, y, cache, table, rule, round_acts, round_weights, telemetry=F
     dZ3 = (P - Y) / B
     # The gradient-down path. In L3-DAW it uses dZ and W rounded along N, the axis of that GEMM.
     if round_weights:
-        q3n, i3, b3 = quantize_axis(dZ3, 1, table, rule, rng)
-        dA2 = q3n @ quantize_axis(p["W3"], 1, table, rule, rng)[0].T
+        q3n, i3, b3 = quantize_axis_n(dZ3, 1, table, rule, "dZ3", rng)
+        dA2 = q3n @ quantize_axis_n(p["W3"], 1, table, rule, "W3", rng)[0].T
         if telemetry:
             rec["vanished"]["dZ3 along N"] = vanished(b3, i3)
             rec["sqnr"]["dZ3 along N"] = q.sqnr(dZ3, q3n)
@@ -181,8 +209,8 @@ def backward_l3(p, y, cache, table, rule, round_acts, round_weights, telemetry=F
         dA2 = dZ3 @ p["W3"].T                  # float, before any rounding
     dZ2 = dA2 * relu_derivative(Z2)
     if round_weights:
-        q2n, i2, b2 = quantize_axis(dZ2, 1, table, rule, rng)
-        dA1 = q2n @ quantize_axis(p["W2"], 1, table, rule, rng)[0].T
+        q2n, i2, b2 = quantize_axis_n(dZ2, 1, table, rule, "dZ2", rng)
+        dA1 = q2n @ quantize_axis_n(p["W2"], 1, table, rule, "W2", rng)[0].T
         if telemetry:
             rec["vanished"]["dZ2 along N"] = vanished(b2, i2)
             rec["sqnr"]["dZ2 along N"] = q.sqnr(dZ2, q2n)
@@ -237,7 +265,7 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
     # the same seed sees the same batches in the same order, and only the rounding differs.
     srng = np.random.default_rng([seed, 1]) if ROUNDING == "sr" else None
     rng = np.random.default_rng(seed)
-    p = init_params(seed, dtype=DTYPE)
+    p = init_params(seed, dtype=DTYPE, width=WIDTH)
     m = {k: np.zeros_like(v) for k, v in p.items()}
     v = {k: np.zeros_like(v) for k, v in p.items()}
     t = 1
@@ -344,10 +372,10 @@ def draw(seeds):
         ax.grid(alpha=0.25)
         ax.set_xticks(epochs)
     axes[0].legend(fontsize=7.0, ncol=1, loc="upper right")
-    fig.suptitle(f"{DATASET}: rung {RUNG}, FP4 operands of the backward GEMMs. Dashed is train, solid is "
+    fig.suptitle(f"{DATASET}: rung {RUNG}, {WIDTH} wide layers, FP4 operands of the backward GEMMs. Dashed is train, solid is "
                  f"test. Each line is the mean over {len(CONFIG_NAMES)} configs and {len(seeds)} seeds, "
                  f"band is plus or minus one standard error", fontsize=8.6)
-    fig.text(0.012, 0.045, f"docs/experiment_{RUNG}_{DATASET}_curves.png  |  runs: out/{RUNG.lower()}/{DATASET}, "
+    fig.text(0.012, 0.045, f"docs/experiment_{RUNG}_{DATASET}{TAG}_curves.png  |  runs: out/{RUNG.lower()}{TAG}/{DATASET}, "
                           f"{len(seeds)} seeds x {len(CONFIG_NAMES)} configs x {len(CELLS)} cells  |  "
                           f"forward and optimizer float32, 10 epochs, batch {BATCH}", fontsize=7.0, color="#555555")
     fig.text(0.012, 0.020, f"{RUNG}, {'round to nearest' if ROUNDING == 'rtn' else 'stochastic rounding'}. "
@@ -356,7 +384,7 @@ def draw(seeds):
                            "dashed = train, solid = test, band = plus or minus one standard error",
              fontsize=7.0, color="#555555")
     fig.tight_layout(rect=(0, 0.080, 1, 0.95))
-    path = os.path.join(DOCS, f"experiment_{RUNG}_{DATASET}_curves.png")
+    path = os.path.join(DOCS, f"experiment_{RUNG}_{DATASET}{TAG}_curves.png")
     fig.savefig(path, dpi=130)
     plt.close(fig)
     print(f"  wrote {path}", flush=True)
@@ -383,7 +411,7 @@ def main():
     # The reference: the saved L0 float weights, evaluated here and not retrained.
     l0 = {}
     for seed in seeds:
-        p0 = load_weights(seed, DATASET)
+        p0 = load_weights(seed, DATASET, WIDTH)
         l0[seed] = 100.0 * float(evaluate(p0, X_test, y_test)[1])
     print(f"  L0 reference: {np.mean(list(l0.values())):.2f} "
           f"+-{np.std(list(l0.values()), ddof=1):.2f} over {len(seeds)} seeds", flush=True)

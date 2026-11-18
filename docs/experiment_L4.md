@@ -323,7 +323,7 @@ Three statements, each from one row:
    59.34 and 60.93, against 59.97 and 62.24 with nothing rounded.
 3. **It is the delta, rounded along the contraction axis N.** That alone takes 58.23 to 28.77.
 
-### Why the delta along N fails, and why only on this dataset
+### First explanation of the collapse, kept for the record and now corrected
 
 `dA = dZ @ W.T` contracts over the output width N. So the operands must be blocked along N. For layer 2 the
 width is 16, and for layer 3 it is 10, so **one block along N is the whole layer width**. One scale then
@@ -347,7 +347,71 @@ MNIST-1D needs 31,250 steps of fine gradient and MNIST reaches its ceiling early
 **The caveat, and it matters for the engine.** The test fixture has layers 16 wide and 10 wide. A block of 16
 along N is therefore the full width of a layer. A layer 4,096 wide would give 256 blocks along N, and each
 block would span 16 neighbouring outputs, not a whole layer. The collapse is measured at N at or below 16, and
-it is not yet known where it stops. That is the open question, and it is recorded as ADR-031.
+it is not yet known where it stops. That was the open question, and it was recorded as ADR-031.
+
+### Correction, 2026-11-18: the cause is the scale rule, not the axis
+
+The two sections above are kept unchanged because the telemetry in them is real. **The reading of that
+telemetry is wrong, and the record of why is below.**
+
+Every block carries two things: a 4-bit payload code per value and one 8-bit scale code. Two independent
+rules choose them. The payload rule chooses the code of one value, between the two codes that bracket it. The
+scale rule chooses one of the 255 table entries for the block.
+
+The defect was in the second rule. The scale was stored as the **nearest** table entry to `amax/6`, and the
+nearest entry can sit **below** `amax/6`. The largest value of the block then needs a ratio `r = |x| / scale`
+above 6, and there is no code above 6. Half the blocks clipped their maximum by up to 11%.
+
+In a softmax gradient row the largest entry is the true-class entry. Clipping it shrinks it by 2.4% on
+average, with the same sign in every row. A row of `dZ3` must sum to zero. The rounded row sums to **+2.4%**
+of the true-class entry instead. Shifting all ten logits of a row by one amount changes no softmax
+probability, so the loss has no gradient against that shift. Adam accumulates it into a steady walk.
+
+**The sign of the drift matches the sign of the bias.** Width 64, MNIST-1D, seed 42, config `a6-e6m2`, 1,800
+steps, one step per batch. The class mean is the signed mean over the ten logits of a row, averaged over the
+batch. The loss cannot see that direction.
+
+| Cell | Row-sum bias of `dZ3` | Class mean of the logits, step 1,800 | Test accuracy, step 1,800 |
+|-|-:|-:|-:|
+| float, nothing rounded | 0 | -0.51 | 73.91 |
+| SR, nearest scale, the shipped rule | +2.42% | **-88.60** | 71.06 |
+| RTN, nearest scale | -2.96% | **+218.43** | 70.81 |
+| SR, scale rounded up | -0.02% | +4.76 | 73.10 |
+
+SR leaves a positive residual and the logits walk negative. RTN leaves a negative residual and they walk
+positive. The float cell does neither. The four configurations rank by bias in the same order as they rank by
+accuracy in the table above.
+
+**The fix and what it gives.** The scale is now the smallest table entry at or above the target, so
+`amax / scale` never exceeds 6 and no block clips. MNIST-1D, cell L4-DAW, SR payload, 10 epochs:
+
+| Width | Evidence | Scale rounded up | Float, same seeds |
+|-|-|-:|-:|
+| 16 | 5 runs, 2 configs, 5 seeds | **65.03 mean** | 64.95 mean |
+| 16 | seed 42, `a6-e6m2` | 64.44 | 64.98 |
+| 64 | seed 42, `a6-e6m2` | 89.90 | 91.00 |
+| 16 | 2 epochs, seed 42, `a6-e6m2` | 61.26 | 62.24, cell DA |
+| 64 | 2 epochs, seed 42, `a6-e6m2` | 81.76 | 82.56, cell DA |
+
+Before the fix the same cell at width 16 gave **36.03** over 40 runs. The decision and the cost of the change
+are in ADR-032.
+
+**What this does to the vanished-share reading.** The 71.48% of `dZ3` entries that fall below the first code
+is a real measurement. It is a symptom, not the cause. Under the fixed rule the scale is larger, so the first
+representable magnitude is larger, so **more** entries should fall below it. A quantity that gets worse while
+the accuracy goes from 36.03 to 65.03 does not explain the accuracy.
+
+**What this does to ADR-031.** The claim "a 1D block along the contraction axis N is rejected at N of 16 or
+less" is refuted at the widths where it was made: at width 16 one block along N covers the whole layer, and
+the cell now sits 0.09 points from float. ADR-031 is marked as superseded.
+
+**What is not measured yet, and must not be read into the table above.**
+
+- Width 16 has 5 runs for 2 of the 4 configurations. Configs `a6-e5m3` and `f6-e6m2` have no fixed run yet.
+- The width-64 matrix with 10 seeds and 4 configurations is running on a second machine.
+- RTN with the scale rounded up is not measured. Its bias has the opposite sign, and the fix does not remove it.
+- The forward pass carries the same clip, because its payload rule is RTN. Every L1, L2 and L2a number in
+  `docs/` includes it, so none of them can be compared with a later rung until they are re-measured.
 
 ### Cost measured, both datasets
 

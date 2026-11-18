@@ -20,11 +20,12 @@ def load_dataset(name):
     X_test, y_test = module.get_x_y_test(path)
     return X_train, y_train, X_test, y_test
 
-def train(seed, epochs, batch_size, X, y, X_test, y_test, tag="mnist", dtype=DTYPE, save_plot=True):
+def train(seed, epochs, batch_size, X, y, X_test, y_test, tag="mnist", dtype=DTYPE, save_plot=True,
+          width=16):
     # dtype is the float width of the whole run, see model.init_params. Every number below follows from it.
     # save_plot=False is for sweeps: 120 identical curves are not evidence, and they cost disk time.
     rng = np.random.default_rng(seed)
-    p = init_params(seed, dtype=dtype)
+    p = init_params(seed, dtype=dtype, width=width)
     m = {k: np.zeros_like(v) for k, v in p.items()}
     v = {k: np.zeros_like(v) for k, v in p.items()}
     t = 1
@@ -81,19 +82,23 @@ def acceptance_test(seed, X_train, y_train, X_test, y_test, tag="mnist"):
     return result
 
 
-def weights_path(seed, dataset):
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out", f"weights_{dataset}_seed{seed}.npy")
+def weights_path(seed, dataset, width=16):
+    # The width is in the file name for every width except 16, so the 16-wide files that every rung
+    # below L5 was measured on keep their old paths. A wide run can never overwrite a narrow one.
+    tail = "" if width == 16 else f"_w{width}"
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "out",
+                        f"weights_{dataset}_seed{seed}{tail}.npy")
 
 
-def save_weights(seed, dataset, data, dtype=DTYPE):
+def save_weights(seed, dataset, data, dtype=DTYPE, width=16):
     X_train, y_train, X_test, y_test = data
     result = train(seed, epochs=10, batch_size=128, X=X_train, y=y_train, X_test=X_test, y_test=y_test,
-                   tag=dataset, dtype=dtype)
-    np.savez(weights_path(seed, dataset), result["params"], **result["params"])
+                   tag=dataset, dtype=dtype, width=width)
+    np.savez(weights_path(seed, dataset, width), result["params"], **result["params"])
     return result
 
-def load_weights(seed, dataset="mnist"):
-    data = np.load(weights_path(seed, dataset) + ".npz")
+def load_weights(seed, dataset="mnist", width=16):
+    data = np.load(weights_path(seed, dataset, width) + ".npz")
     params = {key: data[key] for key in data if key != "arr_0"}
     return params
 
@@ -101,8 +106,11 @@ def load_weights(seed, dataset="mnist"):
 if __name__ == "__main__":
     # uv run python train.py [mnist|mnist1d]   (default: mnist)
     import sys
+    # uv run python train.py [mnist|mnist1d] [width] [number of seeds]
     dataset = sys.argv[1] if len(sys.argv) > 1 else "mnist"
+    width = int(sys.argv[2]) if len(sys.argv) > 2 else 16
+    nseeds = int(sys.argv[3]) if len(sys.argv) > 3 else 3
     assert dataset in DATASETS, f"unknown dataset {dataset}, choose from {list(DATASETS)}"
     data = load_dataset(dataset)
-    for seed in [42, 4242, 424242]:
-        save_weights(seed, dataset, data)
+    for seed in [42, 4242, 424242, 123, 456, 789, 1010, 2020, 3030, 4040][:nseeds]:
+        save_weights(seed, dataset, data, width=width)
