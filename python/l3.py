@@ -75,11 +75,22 @@ CELLS = {f"{RUNG}-{k}": v for k, v in CELL_KINDS.items()}
 # fixture of ADR-031. A wide run writes to its own directory and draws its own figure, so it can never
 # mix with the 16-wide evidence, and the narrow default keeps every stored run exactly as it was.
 WIDTH = int(sys.argv[4]) if len(sys.argv) > 4 else 16
+# The block shape. 0 is the 1D block of 16 values along one axis, which is the shape every stored run uses.
+# 16 is one 8-bit scale per 16 by 16 tile. A tile covers BOTH axes at once, so one rounded copy of a tensor
+# serves the weight-gradient GEMM (which sums over the batch) and the gradient-down GEMM (which sums over the
+# features). A 1D block cannot do that, so cell DAW needs a second copy of dZ and pays a second rounding.
+# TILE = 16 removes that second rounding by construction. See backward_l3.
+#
+# The shape lives in the environment and not in the argument list because it is a format switch, not a run
+# length. FPG4_TILE=16 python l3.py mnist1d 10 sr 64
+TILE = int(os.environ.get("FPG4_TILE", "0"))
+assert TILE in (0, 16), f"unknown tile {TILE}, choose 0 for the 1D block or 16 for a 16 by 16 tile"
 # A run of a different length is a probe, not a rung, so it gets its own directory and its own figure.
 # MNIST has 4,690 steps in ten epochs and MNIST-1D has 31,250, and the collapse may simply need more
 # steps than MNIST has. This argument measures that.
 EPOCHS = int(sys.argv[6]) if len(sys.argv) > 6 else 10
-TAG = ("" if WIDTH == 16 else f"_w{WIDTH}") + ("" if EPOCHS == 10 else f"_e{EPOCHS}")
+TAG = (("" if WIDTH == 16 else f"_w{WIDTH}") + ("" if EPOCHS == 10 else f"_e{EPOCHS}")
+       + ("" if TILE == 0 else f"_t{TILE}"))
 OUT = os.path.join(HERE, "..", "out", f"{RUNG.lower()}{TAG}", DATASET)
 
 # The fifth argument runs only the named cells, for example "DAW" or "D,DAW". Without it, all three
@@ -114,6 +125,42 @@ def quantize_batch(T, table, rule, rng=None):
     quant = q.quantize_blocks if rng is None else (lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng))
     Tq, _, idx, _, _ = quant(blocks, table, rule)
     return Tq.transpose(0, 2, 1).reshape(n, K), idx, blocks
+
+
+def quantize_tile(T, table, rule, rng=None, tile=16):
+    """Round T to FP4 with one 8-bit scale per 16 by 16 tile. Both axes are padded with zeros.
+
+    Why the square tile is the cheaper shape: the two GEMMs of the backward pass reduce over different
+    axes. dW = A.T @ dZ reduces over the batch, so a block along the batch suits it. dA = dZ @ W.T reduces
+    over the features, so a block along the features suits that one. A 1D block holds one axis, so cell
+    DAW must round dZ twice and keep two copies. A 16 by 16 tile holds both axes at once, so ONE rounded
+    copy serves both GEMMs and there is no second rounding.
+
+    Padding. A tensor whose side is not a multiple of 16 is padded with zeros to the next multiple. A zero
+    never raises the tile maximum, so the scale of the tile still belongs to the real values. A padded
+    value decodes to zero, so a padded product adds nothing to either GEMM. The class layer is the case:
+    at width 64 W3 is 64 by 10 and dZ3 is batch by 10. Both pad to 16 columns, the top 10 columns carry
+    the signal, and the 6 padded columns are zero.
+
+    Returns (Tq, idx, blocks) in the shape of T. blocks is (tiles, 256) and idx holds the payload code of
+    every value, so the telemetry can count how many values send no update.
+    """
+    assert tile > 0, f"tile must be positive, got {tile}"
+    n, K = T.shape
+    npad = -(-n // tile) * tile
+    kpad = -(-K // tile) * tile
+    padded = np.zeros((npad, kpad), dtype=T.dtype)
+    padded[:n, :K] = T
+    # One tile is one block of 256 values, laid out as the (rows, blocks, values) shape that
+    # quant.quantize_blocks expects. A tile of 16 by 16 flattened this way keeps each tile contiguous.
+    blocks = np.ascontiguousarray(padded.reshape(npad // tile, tile, kpad // tile, tile)
+                                  .transpose(0, 2, 1, 3).reshape(-1, tile * tile))
+    quant = q.quantize_blocks if rng is None else (lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng))
+    # quant.quantize_blocks wants (rows, blocks, values), so the whole tile is one block with the middle
+    # axis of length one. Nothing in the block code assumes 16 values, it reduces over the last axis.
+    Th, _, idx, _, _ = quant(blocks[:, None, :], table, rule)
+    out = Th.reshape(npad // tile, kpad // tile, tile, tile).transpose(0, 2, 1, 3).reshape(npad, kpad)
+    return out[:n, :K], idx[:, 0, :], blocks
 
 
 def quantize_axis(T, axis, table, rule, rng=None):
@@ -197,23 +244,38 @@ def backward_l3(p, y, cache, table, rule, round_acts, round_weights, telemetry=F
     B = y.shape[0]
     rec = {"vanished": {}, "cos": {}, "sqnr": {}} if telemetry else None
 
+    # One rounded copy of a tensor, in whichever block shape this run uses. With TILE = 0 the block holds
+    # one axis and the axis is the argument. With TILE = 16 the tile holds both axes, so the copy is stored
+    # in `pre` and reused by the weight-gradient GEMM below instead of being rounded a second time.
+    def rnd(T, axis, name):
+        if TILE:
+            return quantize_tile(T, table, rule, rng)
+        return quantize_axis_n(T, axis, table, rule, name, rng)
+
+    pre = {}
     dZ3 = (P - Y) / B
     # The gradient-down path. In L3-DAW it uses dZ and W rounded along N, the axis of that GEMM.
     if round_weights:
-        q3n, i3, b3 = quantize_axis_n(dZ3, 1, table, rule, "dZ3", rng)
-        dA2 = q3n @ quantize_axis_n(p["W3"], 1, table, rule, "W3", rng)[0].T
+        q3n, i3, b3 = rnd(dZ3, 1, "dZ3")
+        dA2 = q3n @ rnd(p["W3"], 1, "W3")[0].T
+        if TILE:
+            pre["dZ3"] = (q3n, i3, b3)        # the tile already serves both axes: one rounding, not two
         if telemetry:
-            rec["vanished"]["dZ3 along N"] = vanished(b3, i3)
-            rec["sqnr"]["dZ3 along N"] = q.sqnr(dZ3, q3n)
+            k = "dZ3" if TILE else "dZ3 along N"
+            rec["vanished"][k] = vanished(b3, i3)
+            rec["sqnr"][k] = q.sqnr(dZ3, q3n)
     else:
         dA2 = dZ3 @ p["W3"].T                  # float, before any rounding
     dZ2 = dA2 * relu_derivative(Z2)
     if round_weights:
-        q2n, i2, b2 = quantize_axis_n(dZ2, 1, table, rule, "dZ2", rng)
-        dA1 = q2n @ quantize_axis_n(p["W2"], 1, table, rule, "W2", rng)[0].T
+        q2n, i2, b2 = rnd(dZ2, 1, "dZ2")
+        dA1 = q2n @ rnd(p["W2"], 1, "W2")[0].T
+        if TILE:
+            pre["dZ2"] = (q2n, i2, b2)
         if telemetry:
-            rec["vanished"]["dZ2 along N"] = vanished(b2, i2)
-            rec["sqnr"]["dZ2 along N"] = q.sqnr(dZ2, q2n)
+            k = "dZ2" if TILE else "dZ2 along N"
+            rec["vanished"][k] = vanished(b2, i2)
+            rec["sqnr"][k] = q.sqnr(dZ2, q2n)
     else:
         dA1 = dZ2 @ p["W2"].T
     dZ1 = dA1 * relu_derivative(Z1)
@@ -222,13 +284,21 @@ def backward_l3(p, y, cache, table, rule, round_acts, round_weights, telemetry=F
 
     qd, qa = {}, {}
     for name, T in float_d.items():
-        qd[name], idx, blocks = quantize_batch(T, table, rule, rng)
+        if name in pre:
+            qd[name], idx, blocks = pre[name]
+        elif TILE:
+            qd[name], idx, blocks = quantize_tile(T, table, rule, rng)
+        else:
+            qd[name], idx, blocks = quantize_batch(T, table, rule, rng)
         if telemetry:
             rec["vanished"][name] = vanished(blocks, idx)
             rec["sqnr"][name] = q.sqnr(T, qd[name])
     if round_acts:
         for name, T in float_a.items():
-            qa[name], idx, blocks = quantize_batch(T, table, rule, rng)
+            if TILE:
+                qa[name], idx, blocks = quantize_tile(T, table, rule, rng)
+            else:
+                qa[name], idx, blocks = quantize_batch(T, table, rule, rng)
             if telemetry:
                 rec["vanished"][name] = vanished(blocks, idx)
                 rec["sqnr"][name] = q.sqnr(T, qa[name])
@@ -318,7 +388,8 @@ def run_cell(cell, config, seed, data, X_test, y_test):
             return json.load(f)
     print(f"  {cell} {config} seed {seed}: training", flush=True)
     p, history = train_l3(seed, EPOCHS, BATCH, data[0], data[1], X_test, y_test, config, cell)
-    obj = {"cell": cell, "config": config, "seed": seed, **history}
+    obj = {"cell": cell, "config": config, "seed": seed, "width": WIDTH, "tile": TILE,
+           "scale_rounding": q.SCALE_ROUNDING, **history}
     os.makedirs(OUT, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
