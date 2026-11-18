@@ -1,6 +1,8 @@
 # ADR-032: The block scale must never clip the block maximum
 
-**Status**: Accepted. 2026-11-18. It corrects the scale rule of ADR-009 and ADR-010, and it answers ADR-031.
+**Status**: Accepted, **amended the same day**. 2026-11-18. It corrects the scale rule of ADR-009 and
+ADR-010, and it answers ADR-031. The amendment: the rule is a setting per use, not one rule for every block.
+The forward measurement below is the reason.
 
 **Date**: 2026-11-18
 
@@ -167,6 +169,44 @@ and separates the output paths, so no stored file can be overwritten by a re-mea
 | 3, add a 9th payload code | keeps the nearest scale and the SQNR | one escape bit or a wider payload, and every code table changes |
 | 4, clip on purpose | the error is visible in a counter | the error is still there |
 | 5, another scale bit | also removes the clip | one bit per block forever, for a defect that costs nothing to remove |
+
+## Amendment, 2026-11-18: the rule is a setting per use
+
+The decision above says one rule for every block. That is wrong for the forward pass, and the mistake is mine:
+I decided it before the forward pass was measured.
+
+The forward pass also clipped, because its payload rule is RTN and the scale rule was the nearest one. Measured
+on the quantized forward pass, 3 seeds, both arms on today's float32 code, so the comparison is paired:
+
+| Config | MNIST weights only, nearest | MNIST weights only, up | MNIST weights and activations, nearest | MNIST weights and activations, up | Delta |
+|-|-:|-:|-:|-:|-:|
+| E6M2 `amax/6` | 93.41 | 93.22 | 91.10 | 90.29 | -0.81 |
+| E6M2 `four6` | 93.52 | 93.30 | 91.64 | 90.80 | -0.84 |
+| E5M3 `amax/6` | 93.54 | 92.47 | 91.73 | 89.89 | -1.84 |
+| E5M3 `four6` | 93.11 | 92.76 | 91.40 | 90.58 | -0.82 |
+
+| Config | MNIST-1D weights only, nearest | MNIST-1D weights only, up | MNIST-1D weights and activations, nearest | MNIST-1D weights and activations, up | Delta |
+|-|-:|-:|-:|-:|-:|
+| E6M2 `amax/6` | 56.77 | 55.01 | 53.53 | 52.36 | -1.17 |
+| E6M2 `four6` | 58.62 | 57.23 | 55.64 | 54.32 | -1.32 |
+| E5M3 `amax/6` | 55.51 | 53.38 | 52.71 | 52.03 | -0.68 |
+| E5M3 `four6` | 55.09 | 55.23 | 52.91 | 53.76 | +0.85 |
+
+The control: the `fp64 scale` rung uses no table, so the rule cannot reach it. It is identical in both arms to
+the last digit, 93.88 and 20.38 dB on MNIST, 54.36 and 20.11 dB on MNIST-1D.
+
+**Seven of eight paired deltas are negative.** The clip is harmless where its error has no direction, and the
+`up` rule there only pays its signal-to-noise price. The clip is a bias where the block maximum is the
+true-class element of a softmax row, and there the `up` rule is worth 29 points.
+
+**Amended decision.** The scale rule is a field of the use, not of the format. The forward pass takes
+`nearest`. The backward operands take `up` for all three rounding rules, because the delta and the saved
+weight are both operands of a row whose sum must be zero. The encoder carries both settings: 254 midpoints and
+255 boundaries, one register bit, no change to the comparator tree, the cycles or the area.
+
+**What this leaves open.** A payload grid whose top code is above 6, for example 7, would keep the nearest
+scale **and** remove the clip, in both passes. That is option 3 of this record, it is a format change, and it
+is not measured. It is the only option known today that serves both passes at once.
 
 ## Links
 

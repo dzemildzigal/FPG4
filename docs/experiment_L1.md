@@ -472,3 +472,63 @@ For scale: the operand quantization gives the layer-1 activation an SQNR of 20.5
 ### 12. What L1e does not test
 
 The update path. Nothing trains in L1e. The accumulator never has to hold a weight update that is 349 times smaller than one grid step. That problem is L3 and L7, and it is the hard one.
+
+## Re-measurement under the rounded-up scale, 2026-11-18
+
+`quant.SCALE_ROUNDING` has two settings, ADR-032. This section measures the second one on the forward pass,
+paired against the first, both on today's float32 code. Nothing else changed: same seeds, same stored weights,
+same script.
+
+**Read this first.** The tables earlier in this document were measured in float64, before ADR-005 moved the
+simulation to float32. A float64 row and a float32 row are not comparable, so the numbers below cannot be
+subtracted from the tables above. Both arms below were produced today, so the difference between them is the
+only thing this section measures.
+
+### L1, weights only
+
+| Dataset | Config | Nearest | Up | Delta |
+|-|-|-:|-:|-:|
+| MNIST | E6M2 `amax/6` | 93.41 | 93.22 | -0.19 |
+| MNIST | E6M2 `four6` | 93.52 | 93.30 | -0.22 |
+| MNIST | E5M3 `amax/6` | 93.54 | 92.47 | -1.07 |
+| MNIST | E5M3 `four6` | 93.11 | 92.76 | -0.35 |
+| MNIST-1D | E6M2 `amax/6` | 56.77 | 55.01 | -1.76 |
+| MNIST-1D | E6M2 `four6` | 58.62 | 57.23 | -1.39 |
+| MNIST-1D | E5M3 `amax/6` | 55.51 | 53.38 | -2.13 |
+| MNIST-1D | E5M3 `four6` | 55.09 | 55.23 | +0.14 |
+| both | L0 float, no scale | 95.18 and 64.94 | same | 0 |
+
+### L1d, weights and activations
+
+| Dataset | Config | Nearest | Up | Delta |
+|-|-|-:|-:|-:|
+| MNIST | E6M2 `amax/6` | 91.10 | 90.29 | -0.81 |
+| MNIST | E6M2 `four6` | 91.64 | 90.80 | -0.84 |
+| MNIST | E5M3 `amax/6` | 91.73 | 89.89 | -1.84 |
+| MNIST | E5M3 `four6` | 91.40 | 90.58 | -0.82 |
+| MNIST-1D | E6M2 `amax/6` | 53.53 | 52.36 | -1.17 |
+| MNIST-1D | E6M2 `four6` | 55.64 | 54.32 | -1.32 |
+| MNIST-1D | E5M3 `amax/6` | 52.71 | 52.03 | -0.68 |
+| MNIST-1D | E5M3 `four6` | 52.91 | 53.76 | +0.85 |
+
+Mean of the eight L1d deltas: **-0.58 points on MNIST-1D and -1.08 points on MNIST.** Seven of eight negative.
+
+### The control
+
+The rung `fp64 scale` uses no 8-bit table, so the scale rule cannot reach it. It is identical in both arms to
+the last printed digit: MNIST 93.88 with 20.38 dB, MNIST-1D 54.36 with 20.11 dB. That is the proof that the
+switch touches the table path and nothing else.
+
+### What it means
+
+The rounded-up scale keeps `amax / s` below the top payload code, so no block clips its maximum. In the
+backward pass that is worth 29 points, because the clipped element is the true-class element of a softmax row
+and the error has one sign in every row.
+
+In the forward pass the error has no direction. The rule then only pays for itself: it loses 0.5 to 1.1 dB of
+signal to noise ratio on the quantized tensors, and the accuracy follows. So the forward pass keeps the
+nearest scale and the backward operands take the rounded-up scale. The datapath carries both forms, ADR-032.
+
+**Caveat on the dataset.** These L1 and L1d numbers are on the 16-wide network, which is too small for
+MNIST-1D: its float ceiling is 64.94 here against 90.50 at 64 wide. The MNIST-1D deltas are therefore a
+statement about a strangled network, not about the format.

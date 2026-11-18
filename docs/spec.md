@@ -1,10 +1,13 @@
 # FPG4 specification
 
-Version 0.14. Status: draft.
+Version 0.15. Status: draft.
 
-Change from 0.13: the scale-selection rule of section 4.4. The scale is now the smallest table entry at
-or above the target, not the nearest one. ADR-032 holds the reason and the measurements. Every number in
-documents of rungs L1 and L2 was measured with the nearest rule and is marked so.
+Change from 0.13: the scale-selection rule of section 4.4 is now **a setting per use**, not one rule for the
+whole datapath. The backward operands take the smallest stored scale at or above the target, which never
+clips the block maximum. The forward pass takes the nearest scale, which is worth 0.58 to 1.08 points of
+accuracy against the other setting. ADR-032 holds the reason and the numbers. Version 0.14 of this document,
+written earlier the same day, set one rule for every use. The forward measurement of the same day contradicts
+it, and section 4.4 records both halves.
 
 ## 1. Purpose
 
@@ -208,8 +211,9 @@ The encoder reads 16 elements, called a block, and it produces one 8-bit scale c
 Two rules are registered, `four6` and `amax6`. The rule `four6` tests two candidate scale codes and keeps the better one. It is the reference rule, and steps 1 to 8 below describe it. **Neither rule is chosen.** The measurements of L1 on two datasets do not separate them, and this project does not take a default. The `amax6` rule is described after step 8.
 
 1. Compute amax, the largest absolute value in the block.
-2. Candidate `c6` is the code of the smallest stored scale that is at or above `amax / 6`. Candidate `c4`
-   is the code of the smallest stored scale that is at or above `amax / 4`.
+2. Candidate `c6` is the code that the scale rule of this use gives for `amax / 6`. Candidate `c4` is the
+   same for `amax / 4`. The rule is `nearest` for the forward pass and `up` for the backward operands.
+   `nearest` is the table entry closest to the target. `up` is the smallest table entry at or above it.
 3. Encode the block with `c6`, and then with `c4`. Step 7 defines the encoding of one candidate.
 4. Compute the absolute error of each candidate. The error is the sum over the 16 elements of `|x - x_hat|`.
 5. Keep the candidate with the smaller error. A tie goes to `c6`.
@@ -221,16 +225,26 @@ Step 2 uses the boundaries of the scale grid in the amax domain. The boundary be
 values `s_lo` and `s_hi` is `d * s_lo`, where `d` is 6 for `c6` and 4 for `c4`. A value at or below `d * s_lo`
 takes `s_lo` and anything above it takes `s_hi` or a higher scale. The form is dyadic, so it is exact.
 
-**Why the boundary and not the midpoint, and why this is a change.** Version 0.13 selected the nearest scale,
-whose threshold is the midpoint. The nearest scale can sit below `d * s_lo`, and then the largest element of
-the block needs a payload code above 6 and there is none. The block maximum then clips by up to 11 percent.
-The clip is one element per block, but it is the largest one, and in a softmax gradient row the largest
-element is the true-class one. The clip has one sign in every row, so the rounded rows stop summing to zero
-in one direction and the optimizer walks that direction. The boundary rule keeps the envelope
-`amax / s <= 6` for every block whose `amax` is inside the scale range, so nothing clips. On 32,000 random
-blocks the nearest rule clips 52, 37, 51 and 35 percent of the blocks for the four configurations, and the
-boundary rule clips none. The price is 1.68 to 2.86 dB of signal to noise ratio on a rounded tensor. The
-accuracy does not follow that price. ADR-032 holds the evidence.
+**Why the rule depends on the use, and why this changed twice on 2026-11-18.** The nearest scale can sit
+below `d * s_lo`, and then the largest element of the block needs a payload code above 6 and there is none.
+The block maximum clips by up to 11 percent. On 32,000 random blocks the nearest rule clips 52, 37, 51 and 35
+percent of the blocks for the four configurations. The `up` rule clips none, and it keeps `amax / s <= 6` for
+every block whose `amax` is inside the scale range.
+
+What the clip costs depends on where the block sits:
+
+- **In a softmax gradient row the clip is a bias.** The largest element of the row is the true-class element.
+  The clip shrinks it with one sign in every row, so the rounded rows stop summing to zero in one direction.
+  A common shift of all logits changes no probability, so the loss cannot correct it. The cell that rounds the
+  backward operands went from 36.03 to 65.03 against float 64.95 when this rule was applied.
+- **In the forward pass the clip is noise with no direction.** The `up` rule then only costs signal to noise
+  ratio, 1.68 to 2.86 dB, and the accuracy follows it down. Measured on the quantized forward pass at 3 seeds:
+  0.81, 0.84, 1.84 and 0.82 points on MNIST, and 1.17, 1.32, 0.68 and +0.85 points on MNIST-1D. Seven of the
+  eight paired deltas are negative.
+
+So the scale rule is a setting of the use, and the encoder carries both. The `nearest` form compares against
+254 midpoints. The `up` form compares against 255 boundaries. The comparator tree, the cycle count and the
+area are the same, and the setting is one register bit. ADR-032 holds the evidence and the two settings.
 
 The encoder divides nowhere. Every threshold is the product of a small dyadic constant and a scale value, so every comparison is exact in binary. The RTL uses this form. Test 8 of the conformance suite proves that the fast path agrees with an encoder that uses exact rational arithmetic. Test 9 proves the scale algebra.
 
@@ -246,7 +260,8 @@ An implementation may ship the rule `amax6`, which tests `c6` only and skips ste
 | Forward activations | Round-to-nearest, ties-to-even | Deterministic and cheap. |
 | Saved activation for the weight-gradient GEMM | Round-to-nearest, ties-to-even | Deterministic and cheap. |
 | Upstream gradient dY | Stochastic rounding, optional | Removes the bias in the expected value. |
-| The block scale, every use | Smallest stored scale at or above the target | Bounds `amax / s` by the top payload code, so the block maximum never clips. ADR-032 |
+| The block scale, forward pass | Nearest stored scale | Keeps the signal to noise ratio. The clip has no direction here. ADR-032 |
+| The block scale, backward operands | Smallest stored scale at or above the target | Bounds `amax / s` by the top payload code, so no block clips and no row picks up a bias. ADR-032 |
 
 Stochastic rounding is a design option, not a requirement. The hardware cost is one random-number source per lane. Experiment E6 in section 10 decides if the option is necessary.
 
