@@ -101,12 +101,22 @@ assert TILE in (0, 16), f"unknown tile {TILE}, choose 0 for the 1D block or 16 f
 # environment. A run of L5 therefore needs FPG4_SCALE_ROUNDING=up for the backward pass.
 FWD = os.environ.get("FPG4_FWD", "float")
 assert FWD in ("float", "1d", "tile16"), f"unknown forward {FWD}, choose float, 1d or tile16"
+# The payload rule of the forward pass. The backward pass cannot work without stochastic rounding: with
+# round to nearest and the scale rule fixed, the same cell collapsed to 22.23 at width 16 and 42.76 at
+# width 64. The forward pass is the other way round. A forward pass on a trained model, 3 seeds and no
+# training, gives 83.19 with round to nearest and 77.95 with stochastic rounding on MNIST-1D, so the
+# random draw costs 5.2 points there and 0.5 on MNIST. Arm L5c measures whether a trained model keeps
+# that ordering. On silicon the two rules share one adder and differ in one addend, so the switch is a
+# mux and the random source can be gated off at inference.
+FWD_PAYLOAD = os.environ.get("FPG4_FWD_PAYLOAD", "sr")
+assert FWD_PAYLOAD in ("sr", "rtn"), f"unknown forward payload {FWD_PAYLOAD}, choose sr or rtn"
 # A run of a different length is a probe, not a rung, so it gets its own directory and its own figure.
 # MNIST has 4,690 steps in ten epochs and MNIST-1D has 31,250, and the collapse may simply need more
 # steps than MNIST has. This argument measures that.
 EPOCHS = int(sys.argv[6]) if len(sys.argv) > 6 else 10
 TAG = (("" if WIDTH == 16 else f"_w{WIDTH}") + ("" if EPOCHS == 10 else f"_e{EPOCHS}")
-       + ("" if TILE == 0 else f"_t{TILE}") + ("" if FWD == "float" else f"_f{FWD}"))
+       + ("" if TILE == 0 else f"_t{TILE}") + ("" if FWD == "float" else f"_f{FWD}")
+       + ("" if FWD_PAYLOAD == "sr" else f"_p{FWD_PAYLOAD}"))
 OUT = os.path.join(HERE, "..", "out", f"{RUNG.lower()}{TAG}", DATASET)
 
 # The fifth argument runs only the named cells, for example "DAW" or "D,DAW". Without it, all three
@@ -375,20 +385,24 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
     # The scale rule is the forward rule, the nearest table entry (ADR-032), and it is passed here
     # explicitly. Without it this function would read the environment and would give the forward pass the
     # rounded-up rule that belongs to the backward operands.
+    # srng is used only when the forward payload rule is stochastic. With FWD_PAYLOAD = "rtn" the draw
+    # is None, which is the round-to-nearest path of the quantizer: no random source, no dither.
+    fwd_rng = srng if FWD_PAYLOAD == "sr" else None
+
     def fwd_weights(P):
         out = dict(P)
         for k in WEIGHTS:
             if FWD == "tile16":
-                out[k] = quantize_tile(P[k], table, rule, srng, scale_rounding="nearest")[0]
+                out[k] = quantize_tile(P[k], table, rule, fwd_rng, scale_rounding="nearest")[0]
             else:
-                out[k] = quantize_axis(P[k], 0, table, rule, srng, scale_rounding="nearest")[0]
+                out[k] = quantize_axis(P[k], 0, table, rule, fwd_rng, scale_rounding="nearest")[0]
         return out
 
     def fwd_quant(A):
         # model.forward calls this three times per batch: X, then A1, then A2.
         if FWD == "tile16":
-            return quantize_tile(A, table, rule, srng, scale_rounding="nearest")[0], {}
-        return quantize_axis(A, 1, table, rule, srng, scale_rounding="nearest")[0], {}
+            return quantize_tile(A, table, rule, fwd_rng, scale_rounding="nearest")[0], {}
+        return quantize_axis(A, 1, table, rule, fwd_rng, scale_rounding="nearest")[0], {}
     for epoch in range(epochs):
         ep = {"vanished": {}, "cos": {}, "sqnr": {}}
         indices = np.arange(X.shape[0])
@@ -448,7 +462,7 @@ def run_cell(cell, config, seed, data, X_test, y_test):
     print(f"  {cell} {config} seed {seed}: training", flush=True)
     p, history = train_l3(seed, EPOCHS, BATCH, data[0], data[1], X_test, y_test, config, cell)
     obj = {"cell": cell, "config": config, "seed": seed, "width": WIDTH, "tile": TILE, "fwd": FWD,
-           "scale_rounding": q.SCALE_ROUNDING, **history}
+           "fwd_payload": FWD_PAYLOAD, "scale_rounding": q.SCALE_ROUNDING, **history}
     os.makedirs(OUT, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
