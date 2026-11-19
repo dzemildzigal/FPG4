@@ -16,8 +16,8 @@ All experiments will be in software, Python before RTL work starts.
 |L2a|QAT - FP4 for weights **and activations** of the forward pass, master weights in FP32, backprop FP32|how does weight+activation quantization affect the forward pass in training for full QAT|
 |L3|FP32 weights and activations, FP4 backprop only with Round To Nearest|how many updates vanish? discretization error (gap). **Measured on MNIST, three cells: every cell stays within 0.2 points of the float row. Measured on MNIST-1D: the third cell collapses, 64.98 to 36.03, because the delta blocked along N loses 71% of its entries at a layer width of 16. See ADR-031**|
 |L4|FP32 weights and activations, FP4 backprop with Stochastic Rounding| SR vs RTN, does it recover L3? **Not run on MNIST: L3 left a gap of 0.09 points there, so there is nothing to recover. SR folds into MNIST-1D or into L5**|
-|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|does native weight and activations in FP4 train? **The next rung to write. Its configuration is closed by ADR-033: E2M1 payload, stochastic rounding, UE6M2 scale at `amax/6`, one 16 by 16 tile, class layer padded to 16 columns**|
-|L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains?|
+|L5|FP4 forward and backprop (L2+L3+L4), optimizer FP32|**done, 50 runs, `docs/experiment_L5.md`.** Does native weight and activations in FP4 train? Yes. MNIST 97.41 against float 97.45. MNIST-1D 85.58 against float 90.50, a price of 4.92 points. The forward payload must be round to nearest and the backward payload stochastic, ADR-034. The 16 by 16 tile is the backward shape only|
+|L6|FP4 forward, backprop AND optimizer|full native FP4 loop trains? **The next rung.** L6a keeps `m` and `v` in float32, L6b puts them on the FP4 grid. Both must run|
 |L7|add ECO, no second tensor: the rounding error goes into the momentum|does it recover updates below 1 grid step|
 |L8|add Hadamard mixing|does outlier transformation help?|
 

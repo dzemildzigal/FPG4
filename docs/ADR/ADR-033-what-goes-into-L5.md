@@ -1,8 +1,11 @@
 # ADR-033: What goes into L5
 
-**Status**: Accepted. 2026-11-19. This record is the closed configuration of rung L5. It does not introduce a
-new format. It names, for every open dial of the ladder, the setting L5 runs with, and it points at the run
-that closed each dial.
+**Status**: Accepted, **amended 2026-11-19 by ADR-034**. Two rows below changed after L5 measured them. The
+payload rule is per pass, not one rule for the pipeline, and the forward block is the 1D block, not open. The
+rest of this record stands, and the amendments are marked in the table.
+
+This record is the closed configuration of rung L5. It does not introduce a new format. It names, for every
+open dial of the ladder, the setting L5 runs with, and it points at the run that closed each dial.
 
 **Date**: 2026-11-19
 
@@ -67,13 +70,14 @@ This record closes all three, and it states the two runs L5 makes first.
 | Item | Setting | Closed by |
 |-|-|-|
 | payload grid | E2M1, `{0, 0.5, 1, 1.5, 2, 3, 4, 6}`, 4 bits | Dzemo, 2026-11-18. A wider top code was refused because it changes E2M1 |
-| payload rounding | **stochastic**, drawn per value | L4. Round to nearest collapses at width 16 (22.23) and at width 64 (42.76), against 90.03 to 90.40 for stochastic |
+| payload rounding, **backward pass** | **stochastic**, drawn per value | L4. Round to nearest collapses at width 16 (22.23) and at width 64 (42.76), against 90.03 to 90.40 for stochastic |
+| payload rounding, **forward pass** | **round to nearest** (amended by ADR-034) | L5c against L5a: +1.32 on the float master and +7.42 on the deployed model, MNIST-1D |
 | block scale | one 8-bit UE6M2 code per block, `amax/6` | this record. `four6` loses 0.59 points to the tile on MNIST-1D and 0.16 on MNIST, `amax/6` loses 0.01 and 0.00 |
 | scale rule, forward pass | nearest table entry | L1d: the rounded-up rule costs 0.81 to 1.84 points on MNIST, and 0.68 to 1.32 in three of the four MNIST-1D configurations |
 | scale rule, backward operands | smallest table entry at or above the target | L4: the nearest rule clips the block maximum, and the clip has one sign in every softmax gradient row |
 | block shape, backward pass | **16 by 16 tile** | this record, 2026-11-19 |
 | block shape, class layer | 16 by 16 tile, padded to 16 columns with zeros | Dzemo, 2026-11-19 |
-| block shape, forward pass | **to be measured by L5a and L5b, see below** | the only property this record leaves open |
+| block shape, forward pass | **1D block along the contraction axis** (closed by L5, amended by ADR-034) | L5a against L5b: +2.29, 10 of 10 seeds |
 | second rounding of `dZ` | **does not exist** | the tile holds both axes, so one rounded copy serves `dW` and `dA` |
 | accumulator | 48 bits, point at `min(y)`, format 24.24 | ADR-014 |
 | lanes | 4 | `docs/datapath.md` |
@@ -98,12 +102,16 @@ it is the more expensive of the two encodings, and under the tile it is now the 
 
 ## The two runs L5 makes first, and the one property they close
 
-The forward pass at width 64 with a 16 by 16 tile is **not measured**. The tile spans the output axis as well
-as the contraction axis, so a forward weight loses a factor of 16 in the number of its scales, and the
-granularity probe prices that at 1.5 dB (`experiment_block.md`, 19.15 dB against 20.67 dB). The forward pass
-is also the pass with no headroom left: at width 16 it costs 2.3 points on MNIST-1D (L2a 62.30 against 64.98).
+**Measured by L5, so this section is now history.** The text below is what this record said before L5 ran. The
+answer: the 1D block wins the forward pass by 2.29 points, 10 of 10 seeds. ADR-034 carries the result.
 
-L5 therefore runs in two halves, in this order:
+The forward pass at width 64 with a 16 by 16 tile was not measured when this record was written. The tile spans
+the output axis as well as the contraction axis, so a forward weight loses a factor of 16 in the number of its
+scales, and the granularity probe prices that at 1.5 dB (`experiment_block.md`, 19.15 dB against 20.67 dB). The
+forward pass is also the pass with no headroom left: at width 16 it costs 2.3 points on MNIST-1D (L2a 62.30
+against 64.98).
+
+L5 therefore ran in two halves, in this order:
 
 | Rung | Forward pass | Backward pass | Purpose |
 |-|-|-|-|

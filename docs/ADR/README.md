@@ -50,7 +50,8 @@ the option set and the reason for waiting are not lost. It is not a decision.
 | 030 | `experiment_ALL-evidence.md` | ALL | tooling | Decided | 2026-11-16 | `be568b1` |
 | 031 | `ADR-031-gradient-down-n-axis.md` | L4 | format | Superseded by 032 | 2026-11-17 | this commit |
 | 032 | `ADR-032-block-scale-never-clips.md` | L4 | format | **Decided** | 2026-11-18 | amends: the rule is per use |
-| 033 | `ADR-033-what-goes-into-L5.md` | L5 | configuration | **Decided** | 2026-11-19 | the closed L5 configuration |
+| 033 | `ADR-033-what-goes-into-L5.md` | L5 | configuration | **Decided, amended** | 2026-11-19 | the closed L5 configuration, amended by 034 |
+| 034 | `ADR-034-payload-rule-is-per-pass.md` | L5 | format | **Decided** | 2026-11-19 | nearest forward, stochastic backward |
 
 ## What is not recorded here
 
@@ -61,4 +62,5 @@ it. A decision record says what was decided and why, and it points at the artifa
 
 If you read nothing else, read 001 (what the engine is for), 007 (the block), 014 (the accumulator), 032
 (the block scale must never clip the block maximum, which corrects the scale rule of 009 and 010 and
-supersedes 031) and 033 (what goes into L5, which closes 026's tile and the three open dials).
+supersedes 031), 033 (what goes into L5, which closes 026's tile and the three open dials) and 034 (the
+payload rule is per pass, which corrects 033's payload row).
