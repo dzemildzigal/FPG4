@@ -838,7 +838,7 @@ weights move.
 | 3 | **`amax`** | 15 pairwise maxima on the full 24-bit magnitude, 4 levels | **about 720** |
 | 4 | **scale snap** | leading-one detect, then 3 comparators against the 8 boundaries of the octave. No division | about 35 |
 | 5 | window clamp | compares the code against the declared floor and selects | about 10, if built |
-| 6 | payload quantizer | `v / s` rounded to the nearest of 8 magnitudes, 4-bit code out | about 50 each |
+| 6 | payload quantizer | `v / s` rounded to one of 8 magnitudes, 4-bit code out. Two addends, one instruction bit: the nearest code in the forward pass, a drawn code in the backward pass, ADR-034 | about 50 each, plus the addend multiplexer |
 | 7 | packer | 16 codes of 4 bits plus one code of 8 bits, 72 bits | 0, it is wiring |
 | 8 | counters | 4 saturating counters, one enable each | about 40 |
 | 9 | control | the cycle sequence of pieces 1 to 7 | about 30 |
@@ -895,10 +895,28 @@ k` with `M` equal to `101010...101011` in binary, and it costs about `N/2` adder
 
 | property | value |
 | :--- | :--- |
-| what it computes | the nearest of `{0, 0.5, 1, 1.5, 2, 3, 4, 6}` times `s` |
-| tie rule | **nearest, ties to the even code.** The same rule as `encode_scale` |
+| what it computes | one of `{0, 0.5, 1, 1.5, 2, 3, 4, 6}` times `s`, chosen by the rounding rule of the pass |
+| forward pass | **the nearest code** (ADR-034). Deterministic, no random source |
+| backward pass | **a drawn code** (ADR-034): the upper code with probability equal to how far the value sits between the two codes. Unbiased |
+| tie rule, forward pass | **nearest, ties to the even code.** The same rule as `encode_scale` |
 | output | 4-bit code, plus the sign carried separately |
-| cost | about 50 LUT6 each, estimate |
+| cost | about 50 LUT6 each, estimate, plus the addend multiplexer below |
+
+**Why one adder serves both rules.** The position of a value inside its grid step is
+`t = |v| / s`, a number in `[code_k, code_k+1)`. Taking the nearest code means comparing
+`t` against a midpoint. Taking the upper code with probability `(t - code_k) / (code_k+1 -
+code_k)` means adding a uniform draw in `[0, 1)` to `t` and then truncating. Both are
+**"add a number in `[0, 1)` and truncate"**: the nearest code is the same operation with
+the fixed addend `0.5`, because adding 0.5 and truncating is rounding to nearest. So the
+two rules share the comparator chain, the adder and the truncation, and they differ in
+one addend. The price is one multiplexer on the addend input per payload value, selected
+by one instruction bit. The random source still exists, because the backward pass cannot
+work without it: round to nearest collapses a training run at both widths. It is clock
+gated off when the model infers, so its dynamic power does not apply there.
+
+**What is not counted.** The LUT6 of that multiplexer, the area of the random source, and
+the routing of the draw to the 16 quantizers. These are E9 items. Until synthesis they are
+estimates and they are marked as such.
 
 #### 4.8.4 The width of one value in the buffer
 
@@ -1177,6 +1195,8 @@ Expect a power saving and no area saving.
 | `S` | 13 bits, exact | **decided**, proven from the format bounds |
 | `P` | 14 bits, 2 integer + 8 significand, 7 exponent | **decided**, proven from the format bounds |
 | scale product rounding | round to nearest, ties to even | **decided** |
+| payload rounding, forward pass | round to nearest, ties to even | **decided**, ADR-034, `docs/experiment_L5.md` |
+| payload rounding, backward pass | stochastic, one uniform draw per value | **decided**, ADR-034, `docs/experiment_L5.md` |
 | layer accumulator | two's complement fixed point, **48 bits, one width for the engine** | **decided**, section 4.5 |
 | layer accumulator point | **`p = min(y)` of the layer**, a field of the layer descriptor. **The experiments use a fixed `24.24`**, which is exact on all six layers of the two datasets | **decided**, section 4.5 |
 | layer accumulator width rule | `20 + (max(y) - min(y)) + ceil(log2(nb))`. Inside 48 bits that is a **22-octave distance at `nb = 49`**, and a **20-octave distance at `nb = 256`** | **decided**, section 4.5 |
