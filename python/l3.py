@@ -69,7 +69,10 @@ N_SEEDS = int(sys.argv[2]) if len(sys.argv) > 2 else len(SEEDS)
 ROUNDING = sys.argv[3] if len(sys.argv) > 3 else "rtn"
 assert DATASET in DATASETS, f"unknown dataset {DATASET}, choose from {list(DATASETS)}"
 assert ROUNDING in ("rtn", "sr"), f"unknown rounding {ROUNDING}, choose rtn or sr"
-RUNG = "L3" if ROUNDING == "rtn" else "L4"
+# The rung names the output directory and the cell names. Rung L5 runs this same file, because L5 is
+# L4 with the forward pass moved onto the FP4 grid, so it sets FPG4_RUNG=L5 and keeps every other
+# switch identical. Without the override the name follows the payload rule, as it did for L3 and L4.
+RUNG = os.environ.get("FPG4_RUNG", "L3" if ROUNDING == "rtn" else "L4")
 CELLS = {f"{RUNG}-{k}": v for k, v in CELL_KINDS.items()}
 # The width of the two hidden layers. 16 is the ruler that every rung below L5 uses. 64 is the wide
 # fixture of ADR-031. A wide run writes to its own directory and draws its own figure, so it can never
@@ -85,12 +88,25 @@ WIDTH = int(sys.argv[4]) if len(sys.argv) > 4 else 16
 # length. FPG4_TILE=16 python l3.py mnist1d 10 sr 64
 TILE = int(os.environ.get("FPG4_TILE", "0"))
 assert TILE in (0, 16), f"unknown tile {TILE}, choose 0 for the 1D block or 16 for a 16 by 16 tile"
+# The forward pass. Rungs L3 and L4 keep it in float32: the weight store is not read and no activation is
+# rounded, so only the backward operands sit on the FP4 grid. Rung L5 is the first rung where the forward
+# pass itself is FP4, and the shape of its block is its own question.
+#
+#   float   the forward pass of L3 and L4. Bit-identical to every stored run, and the default
+#   1d      one 8-bit scale per 16 values along the axis the forward GEMM sums over. L5a
+#   tile16  one 8-bit scale per 16 by 16 tile. L5b
+#
+# The scale rule is per use, ADR-032: the forward pass rounds the scale to the nearest table entry and the
+# backward operands round it up. So this switch fixes the forward rule itself and does not read the
+# environment. A run of L5 therefore needs FPG4_SCALE_ROUNDING=up for the backward pass.
+FWD = os.environ.get("FPG4_FWD", "float")
+assert FWD in ("float", "1d", "tile16"), f"unknown forward {FWD}, choose float, 1d or tile16"
 # A run of a different length is a probe, not a rung, so it gets its own directory and its own figure.
 # MNIST has 4,690 steps in ten epochs and MNIST-1D has 31,250, and the collapse may simply need more
 # steps than MNIST has. This argument measures that.
 EPOCHS = int(sys.argv[6]) if len(sys.argv) > 6 else 10
 TAG = (("" if WIDTH == 16 else f"_w{WIDTH}") + ("" if EPOCHS == 10 else f"_e{EPOCHS}")
-       + ("" if TILE == 0 else f"_t{TILE}"))
+       + ("" if TILE == 0 else f"_t{TILE}") + ("" if FWD == "float" else f"_f{FWD}"))
 OUT = os.path.join(HERE, "..", "out", f"{RUNG.lower()}{TAG}", DATASET)
 
 # The fifth argument runs only the named cells, for example "DAW" or "D,DAW". Without it, all three
@@ -127,7 +143,7 @@ def quantize_batch(T, table, rule, rng=None):
     return Tq.transpose(0, 2, 1).reshape(n, K), idx, blocks
 
 
-def quantize_tile(T, table, rule, rng=None, tile=16):
+def quantize_tile(T, table, rule, rng=None, tile=16, scale_rounding=None):
     """Round T to FP4 with one 8-bit scale per 16 by 16 tile. Both axes are padded with zeros.
 
     Why the square tile is the cheaper shape: the two GEMMs of the backward pass reduce over different
@@ -155,7 +171,10 @@ def quantize_tile(T, table, rule, rng=None, tile=16):
     # quant.quantize_blocks expects. A tile of 16 by 16 flattened this way keeps each tile contiguous.
     blocks = np.ascontiguousarray(padded.reshape(npad // tile, tile, kpad // tile, tile)
                                   .transpose(0, 2, 1, 3).reshape(-1, tile * tile))
-    quant = q.quantize_blocks if rng is None else (lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng))
+    if rng is None:
+        quant = lambda B, t, r: q.quantize_blocks(B, t, r, scale_rounding=scale_rounding)
+    else:
+        quant = lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng, scale_rounding=scale_rounding)
     # quant.quantize_blocks wants (rows, blocks, values), so the whole tile is one block with the middle
     # axis of length one. Nothing in the block code assumes 16 values, it reduces over the last axis.
     Th, _, idx, _, _ = quant(blocks[:, None, :], table, rule)
@@ -163,7 +182,7 @@ def quantize_tile(T, table, rule, rng=None, tile=16):
     return out[:n, :K], idx[:, 0, :], blocks
 
 
-def quantize_axis(T, axis, table, rule, rng=None):
+def quantize_axis(T, axis, table, rule, rng=None, scale_rounding=None):
     """Round T to FP4 with one 8-bit scale per 16 values along `axis`, padding the axis to 16.
 
     The block must lie along the axis the GEMM sums over, so the axis is the argument. When that axis is
@@ -187,13 +206,16 @@ def quantize_axis(T, axis, table, rule, rng=None):
         move = z
     nb = padded // BLOCK
     blocks = np.ascontiguousarray(move.reshape(-1, nb, BLOCK))   # (rows, blocks, 16)
-    quant = q.quantize_blocks if rng is None else (lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng))
+    if rng is None:
+        quant = lambda B, t, r: q.quantize_blocks(B, t, r, scale_rounding=scale_rounding)
+    else:
+        quant = lambda B, t, r: q.quantize_blocks_sr(B, t, r, rng, scale_rounding=scale_rounding)
     Tq, _, idx, _, _ = quant(blocks, table, rule)
     out = Tq.reshape(lead + (padded,))[..., :n]
     return np.moveaxis(out, -1, axis), idx, blocks
 
 
-def quantize_axis_n(T, axis, table, rule, name, rng=None):
+def quantize_axis_n(T, axis, table, rule, name, rng=None, scale_rounding=None):
     """quantize_axis, with the name of the operand carried through to a probe.
 
     A probe must know which operand it is looking at. The shape cannot say: at width 16 a weight is
@@ -201,7 +223,7 @@ def quantize_axis_n(T, axis, table, rule, name, rng=None):
     (128, 10) and W3 is (64, 10). One has 128 rows and one has 64, and a two-copy delta of the batch
     axis has 64 as well. So the name is passed, and nothing is inferred from a shape.
     """
-    return quantize_axis(T, axis, table, rule, rng)
+    return quantize_axis(T, axis, table, rule, rng, scale_rounding)
 
 
 def vanished(blocks, idx):
@@ -339,8 +361,34 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
     m = {k: np.zeros_like(v) for k, v in p.items()}
     v = {k: np.zeros_like(v) for k, v in p.items()}
     t = 1
-    history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": [],
+    history = {"train_loss": [], "train_acc": [], "test_loss": [], "test_acc": [], "test_acc_q": [],
                "vanished": [], "cos": [], "sqnr": []}
+
+    # Rung L5 only: the forward pass on the FP4 grid. The weight store holds FP4 codes, so every forward
+    # GEMM reads a decoded FP4 weight, and every activation enters its GEMM as FP4 as well. Both operands
+    # of all three forward GEMMs are therefore on the grid.
+    #
+    # The forward block runs along the axis the forward GEMM sums over: the features, which is axis 0 of a
+    # weight stored as (in, out) and axis 1 of an activation stored as (batch, features). The tile holds
+    # both axes, so it needs no axis argument.
+    #
+    # The scale rule is the forward rule, the nearest table entry (ADR-032), and it is passed here
+    # explicitly. Without it this function would read the environment and would give the forward pass the
+    # rounded-up rule that belongs to the backward operands.
+    def fwd_weights(P):
+        out = dict(P)
+        for k in WEIGHTS:
+            if FWD == "tile16":
+                out[k] = quantize_tile(P[k], table, rule, srng, scale_rounding="nearest")[0]
+            else:
+                out[k] = quantize_axis(P[k], 0, table, rule, srng, scale_rounding="nearest")[0]
+        return out
+
+    def fwd_quant(A):
+        # model.forward calls this three times per batch: X, then A1, then A2.
+        if FWD == "tile16":
+            return quantize_tile(A, table, rule, srng, scale_rounding="nearest")[0], {}
+        return quantize_axis(A, 1, table, rule, srng, scale_rounding="nearest")[0], {}
     for epoch in range(epochs):
         ep = {"vanished": {}, "cos": {}, "sqnr": {}}
         indices = np.arange(X.shape[0])
@@ -348,7 +396,10 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
         for start in range(0, X.shape[0], batch_size):
             batch = indices[start:start + batch_size]
             X_batch, y_batch = X[batch], y[batch]
-            P, cache = forward(p, X_batch)          # float forward. Nothing is quantized here
+            # The forward pass. With FWD = "float" this is the float forward of L3 and L4: nothing is
+            # quantized and the trailing comment of the original line still holds.
+            p_f, hook = (p, None) if FWD == "float" else (fwd_weights(p), fwd_quant)
+            P, cache = forward(p_f, X_batch, quant=hook)
             # Telemetry only on the first batch of the epoch, so the epochs are comparable and the
             # cost of the second float gradient stays at one batch per epoch.
             tel = start == 0
@@ -369,6 +420,14 @@ def train_l3(seed, epochs, batch_size, X, y, X_test, y_test, config, cell, verbo
         history["train_acc"].append(100.0 * float(train_acc))
         history["test_loss"].append(float(test_loss))
         history["test_acc"].append(100.0 * float(test_acc))
+        # The deployed number. test_acc evaluates the float master with float activations, so it can be
+        # compared with L0, L3 and L4. test_acc_q runs the model the way the fabric will run it at
+        # inference: FP4 weights in the store, FP4 activations, one scale per block.
+        if FWD == "float":
+            history["test_acc_q"].append(float("nan"))
+        else:
+            _, acc_q = evaluate(fwd_weights(p), X_test, y_test, quant=fwd_quant)
+            history["test_acc_q"].append(100.0 * float(acc_q))
         history["vanished"].append({k: float(np.mean(v_)) for k, v_ in ep["vanished"].items() if v_})
         history["cos"].append({k: float(np.mean(v_)) for k, v_ in ep["cos"].items() if v_})
         history["sqnr"].append({k: float(np.mean(v_)) for k, v_ in ep["sqnr"].items() if v_})
@@ -388,7 +447,7 @@ def run_cell(cell, config, seed, data, X_test, y_test):
             return json.load(f)
     print(f"  {cell} {config} seed {seed}: training", flush=True)
     p, history = train_l3(seed, EPOCHS, BATCH, data[0], data[1], X_test, y_test, config, cell)
-    obj = {"cell": cell, "config": config, "seed": seed, "width": WIDTH, "tile": TILE,
+    obj = {"cell": cell, "config": config, "seed": seed, "width": WIDTH, "tile": TILE, "fwd": FWD,
            "scale_rounding": q.SCALE_ROUNDING, **history}
     os.makedirs(OUT, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
